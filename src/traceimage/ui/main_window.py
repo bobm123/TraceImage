@@ -732,10 +732,20 @@ class MainWindow(QMainWindow):
 
     # ----- marquee group delete --------------------------------------------
 
-    _MIN_VERTICES = 3   # matches editable._MIN_VERTICES
+    _MIN_VERTICES = 3   # fewer than this is not a polygon -> drop the contour
+
+    def _layer_of_contour(self, contour):
+        for layer in self._objects:
+            if contour in layer.contours:
+                return layer
+        return None
 
     def delete_selected_vertices(self):
-        """Delete all rubber-band-selected vertices as one undo step."""
+        """Delete rubber-band-selected vertices as one undo step.
+
+        If a contour would be left with fewer than 3 vertices it is removed
+        entirely (a sub-3 contour is not a polygon); undo restores it.
+        """
         if not self._is_edit_mode():
             return
         scene = self.canvas.scene_obj()
@@ -746,33 +756,67 @@ class MainWindow(QMainWindow):
                 groups.setdefault(contour, []).append(contour.index_of(item))
         if not groups:
             return
-        deletions = []   # (contour, index, (x, y)) in deletion order
+
+        vertex_dels = []   # (contour, index, (x, y)) in deletion order
+        removals = []      # mutable records describing removed contours
+
         for contour, indices in groups.items():
-            # Delete highest index first so lower indices stay valid; stop at
-            # the per-contour minimum.
-            for idx in sorted(indices, reverse=True):
-                if contour.vertex_count() <= self._MIN_VERTICES:
-                    break
-                xy = contour.get_point(idx)
-                contour.delete_vertex(idx)
-                deletions.append((contour, idx, xy))
-        if not deletions:
+            indices = sorted(set(indices), reverse=True)
+            remaining = contour.vertex_count() - len(indices)
+            if remaining >= self._MIN_VERTICES:
+                for idx in indices:
+                    xy = contour.get_point(idx)
+                    contour.delete_vertex(idx)
+                    vertex_dels.append((contour, idx, xy))
+            else:
+                layer = self._layer_of_contour(contour)
+                if layer is None:
+                    continue
+                rec = {"layer": layer,
+                       "index": layer.contours.index(contour),
+                       "points": contour.points(),
+                       "role": contour.role,
+                       "closed": contour.closed,
+                       "contour": contour}
+                layer.remove_contour(contour)
+                rec["contour"] = None
+                removals.append(rec)
+
+        if not vertex_dels and not removals:
             return
 
         def _undo():
-            for contour, idx, xy in reversed(deletions):
+            for rec in reversed(removals):
+                rec["contour"] = rec["layer"].insert_contour(
+                    rec["index"], rec["points"], rec["role"], rec["closed"])
+            for contour, idx, xy in reversed(vertex_dels):
                 contour.insert_vertex_at(idx, xy[0], xy[1])
+            self._refresh_editability()
+            self._update_bbox()
 
         def _redo():
-            for contour, idx, xy in deletions:
+            for contour, idx, xy in vertex_dels:
                 contour.delete_vertex(idx)
+            for rec in removals:
+                rec["index"] = rec["layer"].remove_contour(rec["contour"])
+                rec["contour"] = None
+            self._refresh_editability()
+            self._update_bbox()
 
+        n = len(vertex_dels) + sum(len(r["points"]) for r in removals)
+        if removals:
+            # Removing whole contours invalidates older commands that referenced
+            # them, so keep the history simple and safe.
+            self.undo_stack.clear()
         self.undo_stack.push(undo.FnCommand(
-            "delete %d vertices" % len(deletions), _undo, _redo))
+            "delete %d vertices" % n, _undo, _redo))
         scene.clearSelection()
+        self._refresh_editability()
         self._update_bbox()
-        self.statusBar().showMessage(
-            "Deleted %d vertices." % len(deletions), 4000)
+        msg = "Deleted %d vertices" % n
+        if removals:
+            msg += " (%d contour(s) removed)" % len(removals)
+        self.statusBar().showMessage(msg + ".", 4000)
 
     # ----- bounding box -----------------------------------------------------
 

@@ -43,6 +43,21 @@ class ObjectLayer:
             c.remove()
         self.contours = []
 
+    def remove_contour(self, contour):
+        """Remove one contour from this layer; return its former index."""
+        index = self.contours.index(contour)
+        contour.remove()
+        del self.contours[index]
+        return index
+
+    def insert_contour(self, index, points, role='outer', closed=True):
+        """Recreate a contour at `index` (used to undo a contour removal)."""
+        c = EditableContour(self._scene, points, role=role, closed=closed,
+                            edit_sink=self._edit_sink)
+        c.set_visible(self.visible)
+        self.contours.insert(index, c)
+        return c
+
     def remove(self):
         self.clear()
 

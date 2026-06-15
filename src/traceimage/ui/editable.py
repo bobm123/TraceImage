@@ -145,6 +145,10 @@ class EditableContour:
     def role(self):
         return self._role
 
+    @property
+    def closed(self):
+        return self._closed
+
     def points(self):
         """Current vertices as a list of (x, y) in pixel coords."""
         return [(h.pos().x(), h.pos().y()) for h in self._handles]
