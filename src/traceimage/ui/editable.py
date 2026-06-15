@@ -1,0 +1,192 @@
+"""Editable polygon items for the canvas (Phase 2).
+
+An EditableContour draws one contour as a path with a draggable vertex handle on
+every point. The user can:
+  * drag a handle to move a vertex,
+  * right-click a handle to delete that vertex (down to a 3-vertex minimum),
+  * double-click an edge to insert a new vertex there.
+
+Handles use ItemIgnoresTransformations so they stay a constant on-screen size at
+any zoom. All coordinates are scene pixels, matching the photo and the model.
+"""
+
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QPainterPath, QPen
+from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsPathItem
+
+_OUTER_COLOR = QColor(40, 170, 255)
+_HOLE_COLOR = QColor(255, 170, 40)
+_HANDLE_COLOR = QColor(255, 255, 255)
+_HANDLE_R = 4.0          # on-screen radius (device px, due to IgnoresTransform)
+_MIN_VERTICES = 3
+
+
+def _dist_point_to_segment(p, a, b):
+    """Distance from point p to segment ab, all (x, y) tuples/QPointF-likes."""
+    px, py = p.x(), p.y()
+    ax, ay = a.x(), a.y()
+    bx, by = b.x(), b.y()
+    dx, dy = bx - ax, by - ay
+    seg2 = dx * dx + dy * dy
+    if seg2 <= 0.0:
+        ex, ey = px - ax, py - ay
+        return (ex * ex + ey * ey) ** 0.5
+    t = ((px - ax) * dx + (py - ay) * dy) / seg2
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+    cx, cy = ax + t * dx, ay + t * dy
+    ex, ey = px - cx, py - cy
+    return (ex * ex + ey * ey) ** 0.5
+
+
+class VertexHandle(QGraphicsEllipseItem):
+    """A draggable dot marking one polygon vertex."""
+
+    def __init__(self, owner, scene_point):
+        r = _HANDLE_R
+        super().__init__(QRectF(-r, -r, 2 * r, 2 * r))
+        self._owner = owner
+        self.setPos(scene_point)
+        self.setZValue(20)
+        self.setBrush(_HANDLE_COLOR)
+        pen = QPen(QColor(0, 0, 0))
+        pen.setCosmetic(True)
+        self.setPen(pen)
+        self.setFlag(QGraphicsEllipseItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsEllipseItem.ItemSendsScenePositionChanges, True)
+        self.setFlag(QGraphicsEllipseItem.ItemIgnoresTransformations, True)
+        self.setCursor(Qt.SizeAllCursor)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsEllipseItem.ItemScenePositionHasChanged:
+            self._owner._on_handle_moved()
+        return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            self._owner._delete_vertex(self)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class _OutlineItem(QGraphicsPathItem):
+    """The polygon outline; double-clicking an edge inserts a vertex."""
+
+    def __init__(self, owner):
+        super().__init__()
+        self._owner = owner
+        self.setZValue(10)
+
+    def mouseDoubleClickEvent(self, event):
+        # event.pos() is in item coords; the item sits at the scene origin.
+        self._owner._insert_vertex(event.pos())
+        event.accept()
+
+
+class EditableContour:
+    """Controller owning one outline item plus its vertex handles."""
+
+    def __init__(self, scene, points, role="outer", closed=True):
+        self._scene = scene
+        self._role = role
+        self._closed = closed
+        self._editable = True
+
+        color = _HOLE_COLOR if role == "hole" else _OUTER_COLOR
+        pen = QPen(color)
+        pen.setCosmetic(True)
+        pen.setWidth(2)
+        if role == "hole":
+            pen.setStyle(Qt.DashLine)
+
+        self._outline = _OutlineItem(self)
+        self._outline.setPen(pen)
+        scene.addItem(self._outline)
+
+        self._handles = []
+        for pt in points:
+            self._add_handle(QPointF(pt[0], pt[1]))
+        self._rebuild_path()
+
+    # ----- public ----------------------------------------------------------
+
+    @property
+    def role(self):
+        return self._role
+
+    def points(self):
+        """Current vertices as a list of (x, y) in pixel coords."""
+        return [(h.pos().x(), h.pos().y()) for h in self._handles]
+
+    def set_editable(self, editable):
+        """Show/hide handles and toggle edge interaction."""
+        self._editable = editable
+        for h in self._handles:
+            h.setVisible(editable)
+        self._outline.setAcceptedMouseButtons(
+            Qt.AllButtons if editable else Qt.NoButton)
+
+    def set_visible(self, visible):
+        self._outline.setVisible(visible)
+        for h in self._handles:
+            h.setVisible(visible and self._editable)
+
+    def remove(self):
+        for h in self._handles:
+            self._scene.removeItem(h)
+        self._handles = []
+        self._scene.removeItem(self._outline)
+
+    # ----- internals -------------------------------------------------------
+
+    def _add_handle(self, scene_point, index=None):
+        handle = VertexHandle(self, scene_point)
+        self._scene.addItem(handle)
+        if index is None:
+            self._handles.append(handle)
+        else:
+            self._handles.insert(index, handle)
+
+    def _on_handle_moved(self):
+        # Only the outline is rebuilt here, so this does not move handles and
+        # therefore does not recurse.
+        self._rebuild_path()
+
+    def _rebuild_path(self):
+        path = QPainterPath()
+        if self._handles:
+            path.moveTo(self._handles[0].pos())
+            for h in self._handles[1:]:
+                path.lineTo(h.pos())
+            if self._closed:
+                path.closeSubpath()
+        self._outline.setPath(path)
+
+    def _delete_vertex(self, handle):
+        if len(self._handles) <= _MIN_VERTICES:
+            return
+        if handle in self._handles:
+            self._handles.remove(handle)
+            self._scene.removeItem(handle)
+            self._rebuild_path()
+
+    def _insert_vertex(self, scene_pos):
+        if not self._editable or len(self._handles) < 2:
+            return
+        pts = [h.pos() for h in self._handles]
+        n = len(pts)
+        segments = n if self._closed else n - 1
+        best_i, best_d = 0, None
+        for i in range(segments):
+            a = pts[i]
+            b = pts[(i + 1) % n]
+            d = _dist_point_to_segment(scene_pos, a, b)
+            if best_d is None or d < best_d:
+                best_d, best_i = d, i
+        # Insert the new vertex after the start of the nearest segment.
+        self._add_handle(QPointF(scene_pos.x(), scene_pos.y()),
+                         index=best_i + 1)
+        self._rebuild_path()

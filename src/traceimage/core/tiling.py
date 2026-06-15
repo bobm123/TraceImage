@@ -1,0 +1,179 @@
+"""Tiled large-format printing (Phase 5).
+
+Splits the master, millimetre-sized drawing into page-sized tiles with overlap
+(see PLAN.md sec. 7). Each tile is a full-page SVG containing:
+
+  * the correct slice of the master content (the master fragment translated and
+    clipped to the page's printable area);
+  * a rectangle outlining this tile's live (non-overlap) area;
+  * a grid label (e.g. R2-C3);
+  * diamond registration marks at fixed master-coordinate grid crossings, so a
+    mark on one tile's overlap band coincides with the same mark on the
+    neighbouring tile when the sheets are overlapped.
+
+True 1:1 output depends on printing with auto-scaling / "fit to page" OFF; the
+registration diamonds double as a scale check.
+
+Pure arithmetic + string building, so it ports cleanly to C/C++.
+"""
+
+import math
+
+from . import svg_export
+from .svg_export import _num
+
+# Standard page sizes in millimetres (portrait).
+PAGE_SIZES_MM = {
+    "Letter": (215.9, 279.4),
+    "A4": (210.0, 297.0),
+    "Legal": (215.9, 355.6),
+    "A3": (297.0, 420.0),
+}
+
+_DIAMOND_MM = 3.0          # half-diagonal of a registration diamond
+_EPS = 1e-6
+
+
+def tile_counts(content_mm, page_mm, margin_mm, overlap_mm):
+    """Number of tiles needed along one axis (see PLAN.md sec. 7)."""
+    printable = page_mm - 2.0 * margin_mm
+    if printable <= 0.0:
+        raise ValueError("printer margins leave no printable area")
+    step = printable - overlap_mm
+    if step <= 0.0:
+        raise ValueError("overlap is larger than the printable area")
+    return max(1, int(math.ceil((content_mm - overlap_mm) / step)))
+
+
+def plan_tiles(content_w, content_h, page, landscape, margin_mm, overlap_mm):
+    """Compute the tiling geometry without rendering.
+
+    Returns a dict with page/printable sizes, step sizes and tile counts.
+    """
+    if page not in PAGE_SIZES_MM:
+        raise ValueError("unknown page size: %r" % (page,))
+    pw, ph = PAGE_SIZES_MM[page]
+    if landscape:
+        pw, ph = ph, pw
+    printable_w = pw - 2.0 * margin_mm
+    printable_h = ph - 2.0 * margin_mm
+    if printable_w <= 0.0 or printable_h <= 0.0:
+        raise ValueError("printer margins leave no printable area")
+    step_x = printable_w - overlap_mm
+    step_y = printable_h - overlap_mm
+    if step_x <= 0.0 or step_y <= 0.0:
+        raise ValueError("overlap is larger than the printable area")
+    ncols = max(1, int(math.ceil((content_w - overlap_mm) / step_x)))
+    nrows = max(1, int(math.ceil((content_h - overlap_mm) / step_y)))
+    return {
+        "page_w": pw, "page_h": ph,
+        "printable_w": printable_w, "printable_h": printable_h,
+        "step_x": step_x, "step_y": step_y,
+        "ncols": ncols, "nrows": nrows,
+    }
+
+
+def _diamond(cx, cy):
+    """A small diamond (rotated square) path centred at (cx, cy), in mm."""
+    d = _DIAMOND_MM
+    pts = [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)]
+    body = " ".join(
+        "%s %s %s" % ("M" if i == 0 else "L", _num(x), _num(y))
+        for i, (x, y) in enumerate(pts))
+    return ('    <path d="%s Z" fill="none" stroke="#000000" '
+            'stroke-width="0.25" />\n' % body)
+
+
+def _registration_marks(plan, dx, dy):
+    """Diamonds at master grid crossings that fall on this tile's page."""
+    step_x, step_y = plan["step_x"], plan["step_y"]
+    ncols, nrows = plan["ncols"], plan["nrows"]
+    margin = (plan["page_w"] - plan["printable_w"]) / 2.0  # == margin_mm
+    x_lo, x_hi = margin - _EPS, margin + plan["printable_w"] + _EPS
+    y_lo, y_hi = margin - _EPS, margin + plan["printable_h"] + _EPS
+
+    marks = []
+    for i in range(ncols + 1):
+        for j in range(nrows + 1):
+            px = i * step_x + dx
+            py = j * step_y + dy
+            if x_lo <= px <= x_hi and y_lo <= py <= y_hi:
+                marks.append(_diamond(px, py))
+    return "".join(marks)
+
+
+def _tile_svg(content, plan, r, c, content_w, content_h):
+    pw, ph = plan["page_w"], plan["page_h"]
+    printable_w, printable_h = plan["printable_w"], plan["printable_h"]
+    step_x, step_y = plan["step_x"], plan["step_y"]
+    margin = (pw - printable_w) / 2.0
+
+    dx = margin - c * step_x
+    dy = margin - r * step_y
+
+    live_w = min(step_x, content_w - c * step_x)
+    live_h = min(step_y, content_h - r * step_y)
+    live_w = max(0.0, live_w)
+    live_h = max(0.0, live_h)
+
+    clip_id = "clip_r%dc%d" % (r + 1, c + 1)
+    out = []
+    out.append('<?xml version="1.0" encoding="UTF-8"?>\n')
+    out.append(
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'xmlns:xlink="http://www.w3.org/1999/xlink" '
+        'width="%smm" height="%smm" viewBox="0 0 %s %s">\n'
+        % (_num(pw), _num(ph), _num(pw), _num(ph)))
+    out.append('  <defs><clipPath id="%s">'
+               '<rect x="%s" y="%s" width="%s" height="%s" /></clipPath>'
+               '</defs>\n'
+               % (clip_id, _num(margin), _num(margin),
+                  _num(printable_w), _num(printable_h)))
+
+    # Master content, translated into this tile and clipped to the page.
+    out.append('  <g clip-path="url(#%s)">\n' % clip_id)
+    out.append('    <g transform="translate(%s,%s)">\n' % (_num(dx), _num(dy)))
+    out.append(content)
+    out.append('    </g>\n')
+    out.append('  </g>\n')
+
+    # Live (non-overlap) area outline.
+    out.append(
+        '  <rect x="%s" y="%s" width="%s" height="%s" fill="none" '
+        'stroke="#ff00ff" stroke-width="0.2" stroke-dasharray="2,2" />\n'
+        % (_num(margin), _num(margin), _num(live_w), _num(live_h)))
+
+    # Registration diamonds.
+    out.append(_registration_marks(plan, dx, dy))
+
+    # Grid label.
+    out.append(
+        '  <text x="%s" y="%s" font-family="sans-serif" font-size="4" '
+        'fill="#ff00ff">R%d-C%d</text>\n'
+        % (_num(margin + 1.5), _num(margin + 5.0), r + 1, c + 1))
+
+    out.append('</svg>\n')
+    return "".join(out)
+
+
+def build_tiles(project, image_bgr=None, page="Letter", landscape=False,
+                margin_mm=6.0, overlap_mm=10.0, embed_photo=True,
+                downscale_max=None, filled=False):
+    """Build one page-sized SVG per tile.
+
+    Returns a list of (filename, svg_text), e.g. ("tile_r1_c1.svg", "...").
+    """
+    content, content_w, content_h = svg_export.build_content(
+        project, image_bgr=image_bgr, embed_photo=embed_photo,
+        downscale_max=downscale_max, filled=filled, as_layers=False)
+
+    plan = plan_tiles(content_w, content_h, page, landscape,
+                      margin_mm, overlap_mm)
+
+    tiles = []
+    for r in range(plan["nrows"]):
+        for c in range(plan["ncols"]):
+            name = "tile_r%d_c%d.svg" % (r + 1, c + 1)
+            tiles.append((name, _tile_svg(content, plan, r, c,
+                                          content_w, content_h)))
+    return tiles
