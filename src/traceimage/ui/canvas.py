@@ -7,9 +7,11 @@ overlays, and editable contour items are drawn on top. Modes:
   * calibrate  - click two points (Phase 1)
   * seed_fg / seed_bg - paint inside/outside seeds (Phase 2)
   * edit       - interact with contour vertex handles (Phase 2)
+
+Seed strokes support undo/redo: each painted stroke is one step.
 """
 
-from PySide6.QtCore import Qt, QPointF, Signal
+from PySide6.QtCore import Qt, QPoint, QPointF, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
@@ -35,6 +37,12 @@ class Canvas(QGraphicsView):
     calibrationPicked = Signal(QPointF, QPointF)
     # Emitted (live) as the cursor moves over the scene, in pixel coords.
     cursorMoved = Signal(QPointF)
+    # Emitted on right-click (outside edit mode) with the global position, so
+    # the main window can pop up a quick-action menu.
+    contextMenuRequested = Signal(QPoint)
+    # Emitted whenever the seed-stroke set changes, so undo/redo buttons can
+    # refresh their enabled state.
+    seedsChanged = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -59,8 +67,9 @@ class Canvas(QGraphicsView):
         self._calib_line = None
 
         # Seed painting.
-        self._brush_radius = 8.0
+        self._brush_radius = 40.0
         self._seed_strokes = []      # list of dict(label, points, path, item)
+        self._redo_strokes = []      # strokes removed by undo, for redo
         self._active_stroke = None
 
         # Bounding-box preview.
@@ -78,6 +87,7 @@ class Canvas(QGraphicsView):
         self._calib_markers = []
         self._calib_line = None
         self._seed_strokes = []
+        self._redo_strokes = []
         self._active_stroke = None
         self._bbox_item = None
         self._brush_cursor = None
@@ -85,6 +95,7 @@ class Canvas(QGraphicsView):
         self._photo_item.setZValue(0)
         self._scene.setSceneRect(self._photo_item.boundingRect())
         self.fit_to_view()
+        self.seedsChanged.emit()
 
     def has_photo(self):
         return self._photo_item is not None
@@ -193,7 +204,9 @@ class Canvas(QGraphicsView):
         for s in self._seed_strokes:
             self._scene.removeItem(s["item"])
         self._seed_strokes = []
+        self._redo_strokes = []
         self._active_stroke = None
+        self.seedsChanged.emit()
 
     def has_seeds(self):
         return len(self._seed_strokes) > 0
@@ -213,6 +226,8 @@ class Canvas(QGraphicsView):
         path.moveTo(pt)
         item = self._scene.addPath(path, pen)
         item.setZValue(5)
+        # A fresh stroke invalidates the redo history.
+        self._redo_strokes = []
         self._active_stroke = {
             "label": label, "points": [(pt.x(), pt.y())],
             "path": path, "item": item}
@@ -223,6 +238,35 @@ class Canvas(QGraphicsView):
         s["points"].append((pt.x(), pt.y()))
         s["path"].lineTo(pt)
         s["item"].setPath(s["path"])
+
+    # ----- seed undo / redo ------------------------------------------------
+
+    def can_undo_seed(self):
+        return len(self._seed_strokes) > 0
+
+    def can_redo_seed(self):
+        return len(self._redo_strokes) > 0
+
+    def undo_seed(self):
+        """Remove the most recent seed stroke (undo). Returns True if it did."""
+        if not self._seed_strokes:
+            return False
+        s = self._seed_strokes.pop()
+        self._scene.removeItem(s["item"])
+        self._redo_strokes.append(s)
+        self._active_stroke = None
+        self.seedsChanged.emit()
+        return True
+
+    def redo_seed(self):
+        """Re-add the last undone seed stroke (redo). Returns True if it did."""
+        if not self._redo_strokes:
+            return False
+        s = self._redo_strokes.pop()
+        self._scene.addItem(s["item"])   # removeItem kept the item alive
+        self._seed_strokes.append(s)
+        self.seedsChanged.emit()
+        return True
 
     def _update_brush_cursor(self, scene_pt):
         """Show/move the brush-footprint ring at the cursor (seed modes)."""
@@ -311,5 +355,14 @@ class Canvas(QGraphicsView):
         if (self._mode in (MODE_SEED_FG, MODE_SEED_BG)
                 and self._active_stroke is not None):
             self._active_stroke = None
+            self.seedsChanged.emit()   # a stroke was completed
             return
         super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event):
+        # In edit mode the right button deletes vertices, so leave it alone
+        # there. Otherwise ask the main window to show a quick-action menu.
+        if self._photo_item is None or self._mode == MODE_EDIT:
+            return
+        self.contextMenuRequested.emit(event.globalPos())
+        event.accept()

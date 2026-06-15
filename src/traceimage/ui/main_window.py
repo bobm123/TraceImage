@@ -1,6 +1,7 @@
 """Main window: photo loading (Phase 0), calibration (Phase 1), the seed ->
 GrabCut -> editable-contour workflow (Phase 2), multi-object management with a
-margin/bounding-box preview (Phase 3), and true-scale SVG export (Phase 4).
+margin/bounding-box preview and per-object show/hide (Phase 3), true-scale SVG
+export (Phase 4), tiled printing (Phase 5), and seed-stroke undo/redo.
 """
 
 import os
@@ -8,9 +9,10 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QDockWidget, QDoubleSpinBox, QFileDialog,
-    QHBoxLayout, QInputDialog, QLabel, QListWidget, QMainWindow, QMessageBox,
-    QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QApplication, QCheckBox, QDialog, QDockWidget, QDoubleSpinBox, QFileDialog,
+    QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem,
+    QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox, QVBoxLayout,
+    QWidget,
 )
 
 from ..core import calibration as calib
@@ -39,11 +41,14 @@ class MainWindow(QMainWindow):
         self._loaded = None            # image_io.LoadedImage (BGR array source)
         self._objects = []             # list[ObjectLayer]
         self._active_index = -1
+        self._polygon_counter = 0      # monotonic, for default polygon names
 
         self.canvas = Canvas(self)
         self.setCentralWidget(self.canvas)
         self.canvas.calibrationPicked.connect(self._on_calibration_picked)
         self.canvas.cursorMoved.connect(self._on_cursor_moved)
+        self.canvas.contextMenuRequested.connect(self._show_canvas_menu)
+        self.canvas.seedsChanged.connect(self._refresh_undo_actions)
 
         self._build_actions()
         self._build_menus()
@@ -51,6 +56,7 @@ class MainWindow(QMainWindow):
         self._build_object_dock()
         self._build_statusbar()
         self._set_tools_enabled(False)
+        self._refresh_undo_actions()
         self._refresh_scale_readout()
 
     # ----- construction ----------------------------------------------------
@@ -107,8 +113,19 @@ class MainWindow(QMainWindow):
                   self.act_mode_edit):
             self.mode_group.addAction(a)
 
-        self.act_run_seg = QAction("&Run Segmentation", self)
+        self.act_run_seg = QAction("Trace &Poly", self)
+        self.act_run_seg.setToolTip("Trace a polygon from the seeds (GrabCut)")
         self.act_run_seg.triggered.connect(self.run_segmentation)
+
+        # Undo / redo of seed strokes.
+        self.act_undo = QAction("&Undo", self)
+        self.act_undo.setShortcut(QKeySequence.Undo)        # Ctrl+Z
+        self.act_undo.setToolTip("Undo the last seed stroke")
+        self.act_undo.triggered.connect(self.canvas.undo_seed)
+        self.act_redo = QAction("&Redo", self)
+        self.act_redo.setShortcut("Ctrl+Y")
+        self.act_redo.setToolTip("Redo the last undone seed stroke")
+        self.act_redo.triggered.connect(self.canvas.redo_seed)
         self.act_clear_seeds = QAction("Clear &Seeds", self)
         self.act_clear_seeds.triggered.connect(self.clear_seeds)
 
@@ -128,6 +145,10 @@ class MainWindow(QMainWindow):
         m_file.addAction(self.act_export_tiles)
         m_file.addSeparator()
         m_file.addAction(self.act_quit)
+
+        m_edit = mb.addMenu("&Edit")
+        m_edit.addAction(self.act_undo)
+        m_edit.addAction(self.act_redo)
 
         m_view = mb.addMenu("&View")
         m_view.addAction(self.act_zoom_in)
@@ -179,6 +200,9 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         tb.addAction(self.act_run_seg)
         tb.addAction(self.act_clear_seeds)
+        tb.addSeparator()
+        tb.addAction(self.act_undo)
+        tb.addAction(self.act_redo)
 
     def _build_object_dock(self):
         dock = QDockWidget("Objects", self)
@@ -261,13 +285,9 @@ class MainWindow(QMainWindow):
         self._loaded = loaded
         self._objects = []             # scene.clear() in set_photo drops items
         self._active_index = -1
+        self._polygon_counter = 0
 
         self.canvas.set_photo(pixmap)
-        # Scale the default brush to the image so seeds are visible on large
-        # photos (an 8px brush is invisible on a multi-megapixel image).
-        long_edge = max(loaded.pixel_width, loaded.pixel_height)
-        default_brush = int(min(150, max(6, round(long_edge * 0.01))))
-        self._brush_spin.setValue(default_brush)   # signals canvas.set_brush_radius
         self._margin_spin.setValue(self.project.margin_mm)
         self.act_mode_pan.setChecked(True)
         self._mode_pan()
@@ -335,6 +355,36 @@ class MainWindow(QMainWindow):
     def _is_edit_mode(self):
         return self.act_mode_edit.isChecked()
 
+    def _show_canvas_menu(self, global_pos):
+        """Quick-action context menu on right-click (pan/seed modes)."""
+        menu = QMenu(self)
+        menu.addAction(self.act_mode_fg)
+        menu.addAction(self.act_mode_bg)
+
+        brush_menu = menu.addMenu("Brush Size")
+        cur = int(round(self.canvas.brush_radius()))
+        for sz in (10, 20, 40, 80, 120):
+            a = brush_menu.addAction("%d px" % sz)
+            a.setCheckable(True)
+            a.setChecked(sz == cur)
+            a.triggered.connect(
+                lambda _=False, s=sz: self._brush_spin.setValue(s))
+
+        menu.addAction(self.act_run_seg)       # "Trace Poly"
+        menu.addSeparator()
+        menu.addAction(self.act_undo)
+        menu.addAction(self.act_redo)
+        menu.addSeparator()
+        menu.addAction(self.act_zoom_in)
+        menu.addAction(self.act_zoom_out)
+        menu.addAction(self.act_fit)
+        menu.exec(global_pos)
+
+    def _refresh_undo_actions(self):
+        has = self.canvas.has_photo()
+        self.act_undo.setEnabled(has and self.canvas.can_undo_seed())
+        self.act_redo.setEnabled(has and self.canvas.can_redo_seed())
+
     # ----- segmentation ----------------------------------------------------
 
     def clear_seeds(self):
@@ -392,7 +442,9 @@ class MainWindow(QMainWindow):
     def new_object(self):
         if not self.canvas.has_photo():
             return
-        name = "Object %d" % (len(self._objects) + 1)
+        # Monotonic counter so deleting a polygon never reuses a name.
+        self._polygon_counter += 1
+        name = "Polygon %d" % (self._polygon_counter,)
         layer = ObjectLayer(self.canvas.scene_obj(), name)
         self._objects.append(layer)
         self._active_index = len(self._objects) - 1
@@ -428,15 +480,38 @@ class MainWindow(QMainWindow):
         self._obj_list.blockSignals(True)
         self._obj_list.clear()
         for layer in self._objects:
-            self._obj_list.addItem(layer.name)
+            item = QListWidgetItem(self._obj_list)
+            roww = self._make_object_row(layer)
+            item.setSizeHint(roww.sizeHint())
+            self._obj_list.setItemWidget(item, roww)
         if 0 <= self._active_index < len(self._objects):
             self._obj_list.setCurrentRow(self._active_index)
         self._obj_list.blockSignals(False)
 
+    def _make_object_row(self, layer):
+        """A list row: the polygon name plus a right-aligned show/hide box."""
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(4, 1, 4, 1)
+        h.addWidget(QLabel(layer.name))
+        h.addStretch(1)
+        cb = QCheckBox(w)
+        cb.setChecked(layer.visible)
+        cb.setToolTip("Show / hide this polygon")
+        cb.toggled.connect(
+            lambda checked, lyr=layer: self._on_visibility_toggled(lyr, checked))
+        h.addWidget(cb)
+        return w
+
+    def _on_visibility_toggled(self, layer, visible):
+        layer.set_visible(visible)
+        self._refresh_editability()
+
     def _refresh_editability(self):
         edit = self._is_edit_mode()
         for i, layer in enumerate(self._objects):
-            layer.set_visible(True)
+            # Visibility is owned by the per-object toggle; here we only decide
+            # which object exposes its draggable vertex handles.
             layer.set_editable(edit and i == self._active_index)
 
     # ----- bounding box -----------------------------------------------------

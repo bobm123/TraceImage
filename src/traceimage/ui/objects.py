@@ -17,6 +17,7 @@ class ObjectLayer:
         self.name = name
         self.contours = []          # list[EditableContour]
         self.style = Style()
+        self.visible = True
 
     # ----- contour population ----------------------------------------------
 
@@ -25,6 +26,8 @@ class ObjectLayer:
         self.clear()
         for points, role in results:
             self.add_contour(points, role)
+        # New contours inherit the layer's current visibility.
+        self.set_visible(self.visible)
 
     def add_contour(self, points, role="outer", closed=True):
         self.contours.append(
@@ -48,6 +51,7 @@ class ObjectLayer:
             c.set_editable(editable)
 
     def set_visible(self, visible):
+        self.visible = visible
         for c in self.contours:
             c.set_visible(visible)
 

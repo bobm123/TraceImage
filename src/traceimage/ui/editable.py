@@ -8,6 +8,9 @@ every point. The user can:
 
 Handles use ItemIgnoresTransformations so they stay a constant on-screen size at
 any zoom. All coordinates are scene pixels, matching the photo and the model.
+
+Visibility and editability are tracked independently: handles are only shown
+when the contour is both visible and editable.
 """
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -94,6 +97,7 @@ class EditableContour:
         self._role = role
         self._closed = closed
         self._editable = True
+        self._visible = True
 
         color = _HOLE_COLOR if role == "hole" else _OUTER_COLOR
         pen = QPen(color)
@@ -122,17 +126,17 @@ class EditableContour:
         return [(h.pos().x(), h.pos().y()) for h in self._handles]
 
     def set_editable(self, editable):
-        """Show/hide handles and toggle edge interaction."""
+        """Toggle vertex editing (handles only show when also visible)."""
         self._editable = editable
-        for h in self._handles:
-            h.setVisible(editable)
-        self._outline.setAcceptedMouseButtons(
-            Qt.AllButtons if editable else Qt.NoButton)
+        self._apply_handle_visibility()
+        self._update_mouse_buttons()
 
     def set_visible(self, visible):
+        """Show/hide the whole contour (outline and, if editable, handles)."""
+        self._visible = visible
         self._outline.setVisible(visible)
-        for h in self._handles:
-            h.setVisible(visible and self._editable)
+        self._apply_handle_visibility()
+        self._update_mouse_buttons()
 
     def remove(self):
         for h in self._handles:
@@ -142,8 +146,19 @@ class EditableContour:
 
     # ----- internals -------------------------------------------------------
 
+    def _apply_handle_visibility(self):
+        show = self._visible and self._editable
+        for h in self._handles:
+            h.setVisible(show)
+
+    def _update_mouse_buttons(self):
+        active = self._editable and self._visible
+        self._outline.setAcceptedMouseButtons(
+            Qt.AllButtons if active else Qt.NoButton)
+
     def _add_handle(self, scene_point, index=None):
         handle = VertexHandle(self, scene_point)
+        handle.setVisible(self._visible and self._editable)
         self._scene.addItem(handle)
         if index is None:
             self._handles.append(handle)
