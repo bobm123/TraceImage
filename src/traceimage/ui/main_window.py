@@ -28,6 +28,7 @@ from ..core import undo
 from ..model import Project
 from .canvas import Canvas
 from .dialogs import CalibrationDialog, ExportSvgDialog, TilingDialog
+from .editable import VertexHandle
 from .objects import ObjectLayer
 
 _IMAGE_FILTER = (
@@ -58,6 +59,8 @@ class MainWindow(QMainWindow):
         self.canvas.cursorMoved.connect(self._on_cursor_moved)
         self.canvas.contextMenuRequested.connect(self._show_canvas_menu)
         self.canvas.seedsChanged.connect(self._refresh_undo_actions)
+        self.canvas.deleteSelectionRequested.connect(
+            self.delete_selected_vertices)
 
         self._build_actions()
         self._build_menus()
@@ -485,7 +488,8 @@ class MainWindow(QMainWindow):
         self._refresh_undo_actions()
         self.statusBar().showMessage(
             "Edit: drag handles to move, right-click to delete, "
-            "double-click an edge to add a vertex.", 6000)
+            "double-click an edge to add a vertex, drag a box to "
+            "select then Delete to remove several.", 6000)
 
     def _is_edit_mode(self):
         return self.act_mode_edit.isChecked()
@@ -725,6 +729,50 @@ class MainWindow(QMainWindow):
             # Visibility is owned by the per-object toggle; here we only decide
             # which object exposes its draggable vertex handles.
             layer.set_editable(edit and i == self._active_index)
+
+    # ----- marquee group delete --------------------------------------------
+
+    _MIN_VERTICES = 3   # matches editable._MIN_VERTICES
+
+    def delete_selected_vertices(self):
+        """Delete all rubber-band-selected vertices as one undo step."""
+        if not self._is_edit_mode():
+            return
+        scene = self.canvas.scene_obj()
+        groups = {}
+        for item in scene.selectedItems():
+            if isinstance(item, VertexHandle):
+                contour = item.owner_contour()
+                groups.setdefault(contour, []).append(contour.index_of(item))
+        if not groups:
+            return
+        deletions = []   # (contour, index, (x, y)) in deletion order
+        for contour, indices in groups.items():
+            # Delete highest index first so lower indices stay valid; stop at
+            # the per-contour minimum.
+            for idx in sorted(indices, reverse=True):
+                if contour.vertex_count() <= self._MIN_VERTICES:
+                    break
+                xy = contour.get_point(idx)
+                contour.delete_vertex(idx)
+                deletions.append((contour, idx, xy))
+        if not deletions:
+            return
+
+        def _undo():
+            for contour, idx, xy in reversed(deletions):
+                contour.insert_vertex_at(idx, xy[0], xy[1])
+
+        def _redo():
+            for contour, idx, xy in deletions:
+                contour.delete_vertex(idx)
+
+        self.undo_stack.push(undo.FnCommand(
+            "delete %d vertices" % len(deletions), _undo, _redo))
+        scene.clearSelection()
+        self._update_bbox()
+        self.statusBar().showMessage(
+            "Deleted %d vertices." % len(deletions), 4000)
 
     # ----- bounding box -----------------------------------------------------
 

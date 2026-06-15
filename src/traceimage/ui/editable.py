@@ -67,6 +67,7 @@ class VertexHandle(QGraphicsEllipseItem):
         self.setFlag(QGraphicsEllipseItem.ItemIsMovable, True)
         self.setFlag(QGraphicsEllipseItem.ItemSendsScenePositionChanges, True)
         self.setFlag(QGraphicsEllipseItem.ItemIgnoresTransformations, True)
+        self.setFlag(QGraphicsEllipseItem.ItemIsSelectable, True)
         self.setCursor(Qt.SizeAllCursor)
 
     def itemChange(self, change, value):
@@ -91,6 +92,9 @@ class VertexHandle(QGraphicsEllipseItem):
             if start != end:
                 self._owner._record_move(self, start, end)
         super().mouseReleaseEvent(event)
+
+    def owner_contour(self):
+        return self._owner
 
 
 class _OutlineItem(QGraphicsPathItem):

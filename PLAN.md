@@ -194,11 +194,12 @@ draggable vertex handles.
   number, registration diamonds, photo on/off.
 - **Phase 6 — Polish:** ✅ save/load project (JSON). ✅ command/undo-redo stack
   (`core/undo.py`) covering vertex move/add/delete and object delete; Ctrl+Z/Y
-  dispatch by mode (seed strokes while seeding, edit commands otherwise). Remaining:
-  marquee (rubber-band) multi-vertex selection in Edit Vertices mode with group
-  deletion, and folding object-create / Trace-Poly into the undo history (currently
-  those clear the stack). (Bézier smoothing deprioritized in favor of the Inkscape
-  export flavor, which lets users adjust control points in Inkscape directly.)
+  dispatch by mode (seed strokes while seeding, edit commands otherwise). ✅ marquee
+  (rubber-band) multi-vertex selection in Edit Vertices mode with group deletion via
+  Delete (one undo step, respecting the per-contour minimum). Remaining: folding
+  object-create / Trace-Poly into the undo history (currently those clear the stack).
+  (Bézier smoothing deprioritized in favor of the Inkscape export flavor, which lets
+  users adjust control points in Inkscape directly.)
 - **Phase 7 — Port readiness (future):** confirm core modules are free of Python-only
   idioms; sketch the C++/Qt structure.
 

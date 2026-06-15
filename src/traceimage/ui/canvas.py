@@ -45,6 +45,9 @@ class Canvas(QGraphicsView):
     # Emitted whenever the seed-stroke set changes, so undo/redo buttons can
     # refresh their enabled state.
     seedsChanged = Signal()
+    # Emitted when Delete/Backspace is pressed in edit mode, so the main
+    # window can group-delete the selected vertices.
+    deleteSelectionRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,6 +60,7 @@ class Canvas(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.setBackgroundBrush(QBrush(QColor(40, 40, 40)))
 
         self._photo_item = None
@@ -148,9 +152,10 @@ class Canvas(QGraphicsView):
         self._hide_brush_cursor()
 
     def enter_edit_mode(self):
-        # NoDrag so clicks reach the vertex handles instead of panning.
+        # RubberBandDrag lets the user marquee-select vertices on empty
+        # canvas while still dragging individual handles.
         self._mode = MODE_EDIT
-        self.setDragMode(QGraphicsView.NoDrag)
+        self.setDragMode(QGraphicsView.RubberBandDrag)
         self.unsetCursor()
         self._hide_brush_cursor()
 
@@ -403,6 +408,14 @@ class Canvas(QGraphicsView):
             self.seedsChanged.emit()   # a stroke was completed
             return
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if (self._mode == MODE_EDIT
+                and event.key() in (Qt.Key_Delete, Qt.Key_Backspace)):
+            self.deleteSelectionRequested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def contextMenuEvent(self, event):
         # In edit mode the right button deletes vertices, so leave it alone
