@@ -1,7 +1,8 @@
 """Main window: photo loading (Phase 0), calibration (Phase 1), the seed ->
 GrabCut -> editable-contour workflow (Phase 2), multi-object management with a
 margin/bounding-box preview and per-object show/hide (Phase 3), true-scale SVG
-export (Phase 4), tiled printing (Phase 5), and seed-stroke undo/redo.
+export (Phase 4), tiled printing (Phase 5), seed-stroke undo/redo, and project
+save/load as JSON (Phase 6).
 """
 
 import os
@@ -19,6 +20,7 @@ from ..core import calibration as calib
 from ..core import contours as cont
 from ..core import geometry as geo
 from ..core import image_io
+from ..core import project_io
 from ..core import segmentation as seg
 from ..core import svg_export
 from ..core import tiling
@@ -29,6 +31,7 @@ from .objects import ObjectLayer
 
 _IMAGE_FILTER = (
     "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp);;All files (*)")
+_PROJECT_FILTER = "TraceImage project (*.tiproj.json *.json);;All files (*)"
 
 
 class MainWindow(QMainWindow):
@@ -62,12 +65,22 @@ class MainWindow(QMainWindow):
     # ----- construction ----------------------------------------------------
 
     def _build_actions(self):
-        self.act_open = QAction("&Open Photo…", self)
-        self.act_open.setShortcut(QKeySequence.Open)
+        # Project files own Ctrl+O / Ctrl+S; importing a photo and exporting
+        # SVG get distinct shortcuts.
+        self.act_open_project = QAction("&Open Project…", self)
+        self.act_open_project.setShortcut(QKeySequence.Open)        # Ctrl+O
+        self.act_open_project.triggered.connect(self.open_project_file)
+
+        self.act_save_project = QAction("&Save Project…", self)
+        self.act_save_project.setShortcut(QKeySequence.Save)        # Ctrl+S
+        self.act_save_project.triggered.connect(self.save_project_file)
+
+        self.act_open = QAction("Import &Photo…", self)
+        self.act_open.setShortcut("Ctrl+Shift+O")
         self.act_open.triggered.connect(self.open_photo)
 
         self.act_export = QAction("&Export SVG…", self)
-        self.act_export.setShortcut(QKeySequence.Save)
+        self.act_export.setShortcut("Ctrl+E")
         self.act_export.triggered.connect(self.export_svg)
 
         self.act_export_tiles = QAction("Export &Print Tiles…", self)
@@ -140,6 +153,9 @@ class MainWindow(QMainWindow):
         mb = self.menuBar()
 
         m_file = mb.addMenu("&File")
+        m_file.addAction(self.act_open_project)
+        m_file.addAction(self.act_save_project)
+        m_file.addSeparator()
         m_file.addAction(self.act_open)
         m_file.addAction(self.act_export)
         m_file.addAction(self.act_export_tiles)
@@ -175,6 +191,9 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self):
         tb = self.addToolBar("Main")
         tb.setMovable(False)
+        tb.addAction(self.act_open_project)
+        tb.addAction(self.act_save_project)
+        tb.addSeparator()
         tb.addAction(self.act_open)
         tb.addAction(self.act_export)
         tb.addAction(self.act_export_tiles)
@@ -259,25 +278,26 @@ class MainWindow(QMainWindow):
                   self.act_calibrate, self.act_mode_pan, self.act_mode_fg,
                   self.act_mode_bg, self.act_mode_edit, self.act_run_seg,
                   self.act_clear_seeds, self.act_export,
-                  self.act_export_tiles, self.act_show_bbox):
+                  self.act_export_tiles, self.act_show_bbox,
+                  self.act_save_project):
             a.setEnabled(enabled)
 
     # ----- photo loading ---------------------------------------------------
 
     def open_photo(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open Photo", "", _IMAGE_FILTER)
+            self, "Import Photo", "", _IMAGE_FILTER)
         if not path:
             return
         try:
             loaded = image_io.load_image(path)
         except IOError as exc:
-            QMessageBox.critical(self, "Open Photo", str(exc))
+            QMessageBox.critical(self, "Import Photo", str(exc))
             return
         pixmap = QPixmap(path)
         if pixmap.isNull():
             QMessageBox.critical(
-                self, "Open Photo", "Qt could not display this image.")
+                self, "Import Photo", "Qt could not display this image.")
             return
 
         self.project = Project()
@@ -296,6 +316,110 @@ class MainWindow(QMainWindow):
         self.set_unit(self.project.calibration.display_unit)
         self.setWindowTitle("TraceImage — %s" % os.path.basename(path))
         self._refresh_scale_readout()
+
+    # ----- project save / load ---------------------------------------------
+
+    def save_project_file(self):
+        if self._loaded is None:
+            return
+        self._sync_model()
+        base = os.path.splitext(
+            os.path.basename(self._loaded.path or "project"))[0]
+        default_path = os.path.join(os.getcwd(), base + ".tiproj.json")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Project", default_path, _PROJECT_FILTER)
+        if not path:
+            return
+        try:
+            project_io.save_project(self.project, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Project",
+                                 "Could not save: %s" % (exc,))
+            return
+        self.statusBar().showMessage("Saved project %s" % path, 6000)
+
+    def open_project_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Project", "", _PROJECT_FILTER)
+        if not path:
+            return
+        try:
+            project = project_io.load_project(path)
+        except project_io.ProjectIOError as exc:
+            QMessageBox.critical(self, "Open Project", str(exc))
+            return
+
+        img_path = project.source_image_path
+        if not img_path or not os.path.exists(img_path):
+            QMessageBox.warning(
+                self, "Open Project",
+                "Source image not found:\n%s\n\nPlease locate it."
+                % (img_path,))
+            img_path, _ = QFileDialog.getOpenFileName(
+                self, "Locate Source Image", "", _IMAGE_FILTER)
+            if not img_path:
+                return
+        try:
+            loaded = image_io.load_image(img_path)
+        except IOError as exc:
+            QMessageBox.critical(self, "Open Project", str(exc))
+            return
+        pixmap = QPixmap(img_path)
+        if pixmap.isNull():
+            QMessageBox.critical(
+                self, "Open Project", "Qt could not display the source image.")
+            return
+
+        saved_w, saved_h = project.pixel_width, project.pixel_height
+
+        self.project = project
+        self.project.set_source_image(loaded)   # match actual image dims/path
+        self._loaded = loaded
+
+        self.canvas.set_photo(pixmap)
+        self._load_layers_from_project()
+        self._polygon_counter = self._max_polygon_number()
+
+        self._set_tools_enabled(True)
+        self.act_mode_pan.setChecked(True)
+        self._mode_pan()
+        self._margin_spin.setValue(self.project.margin_mm)
+        self.set_unit(self.project.calibration.display_unit)
+        self._refresh_object_list()
+        self._refresh_scale_readout()
+        self._update_bbox()
+        self.setWindowTitle("TraceImage — %s" % os.path.basename(path))
+
+        if saved_w and (saved_w != loaded.pixel_width
+                        or saved_h != loaded.pixel_height):
+            QMessageBox.warning(
+                self, "Open Project",
+                "The source image size differs from when the project was "
+                "saved; traced points may not line up.")
+        self.statusBar().showMessage("Opened project %s" % path, 6000)
+
+    def _load_layers_from_project(self):
+        """Rebuild on-canvas ObjectLayers from self.project.objects."""
+        scene = self.canvas.scene_obj()
+        self._objects = []
+        for obj in self.project.objects:
+            layer = ObjectLayer(scene, obj.name)
+            layer.style = obj.style
+            for c in obj.contours:
+                layer.add_contour(c.points, role=c.role, closed=c.closed)
+            self._objects.append(layer)
+        self._active_index = 0 if self._objects else -1
+
+    def _max_polygon_number(self):
+        """Largest N among existing 'Polygon N' names (0 if none)."""
+        best = 0
+        for layer in self._objects:
+            name = layer.name
+            if name.startswith("Polygon "):
+                tail = name[len("Polygon "):].strip()
+                if tail.isdigit():
+                    best = max(best, int(tail))
+        return best
 
     # ----- calibration -----------------------------------------------------
 
