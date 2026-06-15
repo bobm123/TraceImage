@@ -1,4 +1,4 @@
-"""Editable polygon items for the canvas (Phase 2).
+"""Editable polygon items for the canvas (Phase 2; undo hooks Phase 6).
 
 An EditableContour draws one contour as a path with a draggable vertex handle on
 every point. The user can:
@@ -11,6 +11,12 @@ any zoom. All coordinates are scene pixels, matching the photo and the model.
 
 Visibility and editability are tracked independently: handles are only shown
 when the contour is both visible and editable.
+
+Editing is split into index-based *primitives* (move_vertex / insert_vertex_at /
+delete_vertex) that just mutate geometry, and interactive handlers that perform
+the primitive and then report it to an optional `edit_sink` so the application
+can record an undo command. Undo/redo call the primitives directly, so they
+never re-record.
 """
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -51,6 +57,7 @@ class VertexHandle(QGraphicsEllipseItem):
         r = _HANDLE_R
         super().__init__(QRectF(-r, -r, 2 * r, 2 * r))
         self._owner = owner
+        self._press_pos = None
         self.setPos(scene_point)
         self.setZValue(20)
         self.setBrush(_HANDLE_COLOR)
@@ -69,10 +76,21 @@ class VertexHandle(QGraphicsEllipseItem):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
-            self._owner._delete_vertex(self)
+            self._owner._delete_vertex_interactive(self)
             event.accept()
             return
+        if event.button() == Qt.LeftButton:
+            self._press_pos = self.pos()   # remember drag start for undo
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._press_pos is not None:
+            start = self._press_pos
+            self._press_pos = None
+            end = self.pos()
+            if start != end:
+                self._owner._record_move(self, start, end)
+        super().mouseReleaseEvent(event)
 
 
 class _OutlineItem(QGraphicsPathItem):
@@ -85,19 +103,21 @@ class _OutlineItem(QGraphicsPathItem):
 
     def mouseDoubleClickEvent(self, event):
         # event.pos() is in item coords; the item sits at the scene origin.
-        self._owner._insert_vertex(event.pos())
+        self._owner._insert_vertex_interactive(event.pos())
         event.accept()
 
 
 class EditableContour:
     """Controller owning one outline item plus its vertex handles."""
 
-    def __init__(self, scene, points, role="outer", closed=True):
+    def __init__(self, scene, points, role="outer", closed=True,
+                 edit_sink=None):
         self._scene = scene
         self._role = role
         self._closed = closed
         self._editable = True
         self._visible = True
+        self._sink = edit_sink     # optional; receives interactive edits
 
         color = _HOLE_COLOR if role == "hole" else _OUTER_COLOR
         pen = QPen(color)
@@ -125,6 +145,16 @@ class EditableContour:
         """Current vertices as a list of (x, y) in pixel coords."""
         return [(h.pos().x(), h.pos().y()) for h in self._handles]
 
+    def vertex_count(self):
+        return len(self._handles)
+
+    def get_point(self, index):
+        h = self._handles[index]
+        return (h.pos().x(), h.pos().y())
+
+    def index_of(self, handle):
+        return self._handles.index(handle)
+
     def set_editable(self, editable):
         """Toggle vertex editing (handles only show when also visible)."""
         self._editable = editable
@@ -143,6 +173,58 @@ class EditableContour:
             self._scene.removeItem(h)
         self._handles = []
         self._scene.removeItem(self._outline)
+
+    # ----- geometry primitives (no undo recording) -------------------------
+
+    def move_vertex(self, index, x, y):
+        self._handles[index].setPos(QPointF(x, y))
+        self._rebuild_path()
+
+    def insert_vertex_at(self, index, x, y):
+        self._add_handle(QPointF(x, y), index=index)
+        self._rebuild_path()
+
+    def delete_vertex(self, index):
+        handle = self._handles.pop(index)
+        self._scene.removeItem(handle)
+        self._rebuild_path()
+
+    # ----- interactive edits (report to the edit sink) ---------------------
+
+    def _delete_vertex_interactive(self, handle):
+        if len(self._handles) <= _MIN_VERTICES:
+            return
+        index = self.index_of(handle)
+        xy = self.get_point(index)
+        self.delete_vertex(index)
+        if self._sink is not None:
+            self._sink.record_delete(self, index, xy)
+
+    def _insert_vertex_interactive(self, scene_pos):
+        if not self._editable or len(self._handles) < 2:
+            return
+        pts = [h.pos() for h in self._handles]
+        n = len(pts)
+        segments = n if self._closed else n - 1
+        best_i, best_d = 0, None
+        for i in range(segments):
+            a = pts[i]
+            b = pts[(i + 1) % n]
+            d = _dist_point_to_segment(scene_pos, a, b)
+            if best_d is None or d < best_d:
+                best_d, best_i = d, i
+        index = best_i + 1
+        xy = (scene_pos.x(), scene_pos.y())
+        self.insert_vertex_at(index, xy[0], xy[1])
+        if self._sink is not None:
+            self._sink.record_insert(self, index, xy)
+
+    def _record_move(self, handle, start, end):
+        index = self.index_of(handle)
+        if self._sink is not None:
+            self._sink.record_move(self, index,
+                                   (start.x(), start.y()),
+                                   (end.x(), end.y()))
 
     # ----- internals -------------------------------------------------------
 
@@ -179,29 +261,3 @@ class EditableContour:
             if self._closed:
                 path.closeSubpath()
         self._outline.setPath(path)
-
-    def _delete_vertex(self, handle):
-        if len(self._handles) <= _MIN_VERTICES:
-            return
-        if handle in self._handles:
-            self._handles.remove(handle)
-            self._scene.removeItem(handle)
-            self._rebuild_path()
-
-    def _insert_vertex(self, scene_pos):
-        if not self._editable or len(self._handles) < 2:
-            return
-        pts = [h.pos() for h in self._handles]
-        n = len(pts)
-        segments = n if self._closed else n - 1
-        best_i, best_d = 0, None
-        for i in range(segments):
-            a = pts[i]
-            b = pts[(i + 1) % n]
-            d = _dist_point_to_segment(scene_pos, a, b)
-            if best_d is None or d < best_d:
-                best_d, best_i = d, i
-        # Insert the new vertex after the start of the nearest segment.
-        self._add_handle(QPointF(scene_pos.x(), scene_pos.y()),
-                         index=best_i + 1)
-        self._rebuild_path()

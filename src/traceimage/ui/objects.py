@@ -3,6 +3,9 @@ object -- an outer boundary plus zero or more holes, or several disjoint loops.
 
 Keeps the on-canvas EditableContour items and can project them back into the
 plain model classes (model.Contour / model.TracedObject) used by SVG export.
+
+An optional `edit_sink` is forwarded to every EditableContour so interactive
+vertex edits can be recorded on the application's undo stack (Phase 6).
 """
 
 from ..model import Contour, Style, TracedObject
@@ -12,12 +15,13 @@ from .editable import EditableContour
 class ObjectLayer:
     """A named object: a collection of EditableContour items on one scene."""
 
-    def __init__(self, scene, name):
+    def __init__(self, scene, name, edit_sink=None):
         self._scene = scene
         self.name = name
         self.contours = []          # list[EditableContour]
         self.style = Style()
         self.visible = True
+        self._edit_sink = edit_sink
 
     # ----- contour population ----------------------------------------------
 
@@ -31,7 +35,8 @@ class ObjectLayer:
 
     def add_contour(self, points, role="outer", closed=True):
         self.contours.append(
-            EditableContour(self._scene, points, role=role, closed=closed))
+            EditableContour(self._scene, points, role=role, closed=closed,
+                            edit_sink=self._edit_sink))
 
     def clear(self):
         for c in self.contours:

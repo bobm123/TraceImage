@@ -1,8 +1,8 @@
 """Main window: photo loading (Phase 0), calibration (Phase 1), the seed ->
 GrabCut -> editable-contour workflow (Phase 2), multi-object management with a
 margin/bounding-box preview and per-object show/hide (Phase 3), true-scale SVG
-export (Phase 4), tiled printing (Phase 5), seed-stroke undo/redo, and project
-save/load as JSON (Phase 6).
+export (Phase 4), tiled printing (Phase 5), project save/load and an undo/redo
+command stack for vertex/object edits (Phase 6).
 """
 
 import os
@@ -24,6 +24,7 @@ from ..core import project_io
 from ..core import segmentation as seg
 from ..core import svg_export
 from ..core import tiling
+from ..core import undo
 from ..model import Project
 from .canvas import Canvas
 from .dialogs import CalibrationDialog, ExportSvgDialog, TilingDialog
@@ -46,6 +47,11 @@ class MainWindow(QMainWindow):
         self._active_index = -1
         self._polygon_counter = 0      # monotonic, for default polygon names
 
+        # Undo stack for vertex/object edits (seed strokes use the canvas's own
+        # stack; Ctrl+Z/Y dispatch between them by mode).
+        self.undo_stack = undo.UndoStack()
+        self.undo_stack.on_change(self._refresh_undo_actions)
+
         self.canvas = Canvas(self)
         self.setCentralWidget(self.canvas)
         self.canvas.calibrationPicked.connect(self._on_calibration_picked)
@@ -65,8 +71,6 @@ class MainWindow(QMainWindow):
     # ----- construction ----------------------------------------------------
 
     def _build_actions(self):
-        # Project files own Ctrl+O / Ctrl+S; importing a photo and exporting
-        # SVG get distinct shortcuts.
         self.act_open_project = QAction("&Open Project…", self)
         self.act_open_project.setShortcut(QKeySequence.Open)        # Ctrl+O
         self.act_open_project.triggered.connect(self.open_project_file)
@@ -130,15 +134,13 @@ class MainWindow(QMainWindow):
         self.act_run_seg.setToolTip("Trace a polygon from the seeds (GrabCut)")
         self.act_run_seg.triggered.connect(self.run_segmentation)
 
-        # Undo / redo of seed strokes.
+        # Undo / redo: dispatch to seed strokes or the edit command stack.
         self.act_undo = QAction("&Undo", self)
         self.act_undo.setShortcut(QKeySequence.Undo)        # Ctrl+Z
-        self.act_undo.setToolTip("Undo the last seed stroke")
-        self.act_undo.triggered.connect(self.canvas.undo_seed)
+        self.act_undo.triggered.connect(self._do_undo)
         self.act_redo = QAction("&Redo", self)
         self.act_redo.setShortcut("Ctrl+Y")
-        self.act_redo.setToolTip("Redo the last undone seed stroke")
-        self.act_redo.triggered.connect(self.canvas.redo_seed)
+        self.act_redo.triggered.connect(self._do_redo)
         self.act_clear_seeds = QAction("Clear &Seeds", self)
         self.act_clear_seeds.triggered.connect(self.clear_seeds)
 
@@ -306,6 +308,7 @@ class MainWindow(QMainWindow):
         self._objects = []             # scene.clear() in set_photo drops items
         self._active_index = -1
         self._polygon_counter = 0
+        self.undo_stack.clear()
 
         self.canvas.set_photo(pixmap)
         self._margin_spin.setValue(self.project.margin_mm)
@@ -375,6 +378,7 @@ class MainWindow(QMainWindow):
         self.project = project
         self.project.set_source_image(loaded)   # match actual image dims/path
         self._loaded = loaded
+        self.undo_stack.clear()
 
         self.canvas.set_photo(pixmap)
         self._load_layers_from_project()
@@ -398,16 +402,19 @@ class MainWindow(QMainWindow):
                 "saved; traced points may not line up.")
         self.statusBar().showMessage("Opened project %s" % path, 6000)
 
+    def _build_layer_from_model(self, model_obj):
+        """Create an on-canvas ObjectLayer from a model.TracedObject."""
+        layer = ObjectLayer(self.canvas.scene_obj(), model_obj.name,
+                            edit_sink=self)
+        layer.style = model_obj.style
+        for c in model_obj.contours:
+            layer.add_contour(c.points, role=c.role, closed=c.closed)
+        return layer
+
     def _load_layers_from_project(self):
         """Rebuild on-canvas ObjectLayers from self.project.objects."""
-        scene = self.canvas.scene_obj()
-        self._objects = []
-        for obj in self.project.objects:
-            layer = ObjectLayer(scene, obj.name)
-            layer.style = obj.style
-            for c in obj.contours:
-                layer.add_contour(c.points, role=c.role, closed=c.closed)
-            self._objects.append(layer)
+        self._objects = [self._build_layer_from_model(o)
+                         for o in self.project.objects]
         self._active_index = 0 if self._objects else -1
 
     def _max_polygon_number(self):
@@ -456,22 +463,26 @@ class MainWindow(QMainWindow):
         self.canvas.enter_pan_mode()
         self._refresh_editability()
         self._update_bbox()
+        self._refresh_undo_actions()
 
     def _mode_seed_fg(self):
         self.canvas.start_seed_mode("fg")
         self._refresh_editability()
+        self._refresh_undo_actions()
         self.statusBar().showMessage(
             "Paint inside the object (foreground seeds).", 4000)
 
     def _mode_seed_bg(self):
         self.canvas.start_seed_mode("bg")
         self._refresh_editability()
+        self._refresh_undo_actions()
         self.statusBar().showMessage(
             "Paint outside the object (background seeds).", 4000)
 
     def _mode_edit(self):
         self.canvas.enter_edit_mode()
         self._refresh_editability()
+        self._refresh_undo_actions()
         self.statusBar().showMessage(
             "Edit: drag handles to move, right-click to delete, "
             "double-click an edge to add a vertex.", 6000)
@@ -504,10 +515,61 @@ class MainWindow(QMainWindow):
         menu.addAction(self.act_fit)
         menu.exec(global_pos)
 
+    # ----- undo / redo (context dispatch) ----------------------------------
+
+    def _in_seed_mode(self):
+        return self.act_mode_fg.isChecked() or self.act_mode_bg.isChecked()
+
+    def _do_undo(self):
+        if self._in_seed_mode():
+            self.canvas.undo_seed()
+        else:
+            self.undo_stack.undo()
+            self._update_bbox()
+        self._refresh_undo_actions()
+
+    def _do_redo(self):
+        if self._in_seed_mode():
+            self.canvas.redo_seed()
+        else:
+            self.undo_stack.redo()
+            self._update_bbox()
+        self._refresh_undo_actions()
+
     def _refresh_undo_actions(self):
-        has = self.canvas.has_photo()
-        self.act_undo.setEnabled(has and self.canvas.can_undo_seed())
-        self.act_redo.setEnabled(has and self.canvas.can_redo_seed())
+        if self._in_seed_mode():
+            cu = self.canvas.has_photo() and self.canvas.can_undo_seed()
+            cr = self.canvas.has_photo() and self.canvas.can_redo_seed()
+            ulabel = rlabel = "seed stroke"
+        else:
+            cu = self.undo_stack.can_undo()
+            cr = self.undo_stack.can_redo()
+            ulabel = self.undo_stack.undo_label()
+            rlabel = self.undo_stack.redo_label()
+        self.act_undo.setEnabled(cu)
+        self.act_redo.setEnabled(cr)
+        self.act_undo.setToolTip(("Undo " + ulabel).strip() if cu else "Undo")
+        self.act_redo.setToolTip(("Redo " + rlabel).strip() if cr else "Redo")
+
+    # ----- edit sink (called by EditableContour) ---------------------------
+
+    def record_move(self, contour, index, old_xy, new_xy):
+        self.undo_stack.push(undo.FnCommand(
+            "move vertex",
+            undo=lambda: contour.move_vertex(index, old_xy[0], old_xy[1]),
+            redo=lambda: contour.move_vertex(index, new_xy[0], new_xy[1])))
+
+    def record_insert(self, contour, index, xy):
+        self.undo_stack.push(undo.FnCommand(
+            "add vertex",
+            undo=lambda: contour.delete_vertex(index),
+            redo=lambda: contour.insert_vertex_at(index, xy[0], xy[1])))
+
+    def record_delete(self, contour, index, xy):
+        self.undo_stack.push(undo.FnCommand(
+            "delete vertex",
+            undo=lambda: contour.insert_vertex_at(index, xy[0], xy[1]),
+            redo=lambda: contour.delete_vertex(index)))
 
     # ----- segmentation ----------------------------------------------------
 
@@ -552,6 +614,9 @@ class MainWindow(QMainWindow):
             self.new_object()
         self._objects[self._active_index].set_contours(results)
         self.canvas.clear_seeds()
+        # Tracing replaces the active object's contours, invalidating any edit
+        # commands that referenced the old ones; start the history fresh.
+        self.undo_stack.clear()
 
         self.act_mode_edit.setChecked(True)
         self._mode_edit()
@@ -569,7 +634,7 @@ class MainWindow(QMainWindow):
         # Monotonic counter so deleting a polygon never reuses a name.
         self._polygon_counter += 1
         name = "Polygon %d" % (self._polygon_counter,)
-        layer = ObjectLayer(self.canvas.scene_obj(), name)
+        layer = ObjectLayer(self.canvas.scene_obj(), name, edit_sink=self)
         self._objects.append(layer)
         self._active_index = len(self._objects) - 1
         self._refresh_object_list()
@@ -578,9 +643,32 @@ class MainWindow(QMainWindow):
     def delete_active_object(self):
         if self._active_index < 0:
             return
-        self._objects[self._active_index].remove()
-        del self._objects[self._active_index]
-        self._active_index = min(self._active_index, len(self._objects) - 1)
+        index = self._active_index
+        snapshot = self._objects[index].to_model()
+        self._remove_layer_at(index)
+        # Structural change: keep the history simple and free of stale targets.
+        self.undo_stack.clear()
+        self.undo_stack.push(undo.FnCommand(
+            "delete object",
+            undo=lambda: self._insert_layer_from_model(index, snapshot),
+            redo=lambda: self._remove_layer_at(index)))
+
+    def _remove_layer_at(self, index):
+        if not (0 <= index < len(self._objects)):
+            return
+        self._objects[index].remove()
+        del self._objects[index]
+        if self._active_index >= len(self._objects):
+            self._active_index = len(self._objects) - 1
+        self._refresh_object_list()
+        self._refresh_editability()
+        self._update_bbox()
+
+    def _insert_layer_from_model(self, index, model_obj):
+        layer = self._build_layer_from_model(model_obj)
+        index = max(0, min(index, len(self._objects)))
+        self._objects.insert(index, layer)
+        self._active_index = index
         self._refresh_object_list()
         self._refresh_editability()
         self._update_bbox()
