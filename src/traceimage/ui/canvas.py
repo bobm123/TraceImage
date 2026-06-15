@@ -156,10 +156,12 @@ class Canvas(QGraphicsView):
 
     def _apply_mode_cursor(self):
         """Restore the cursor appropriate to the current mode."""
+        vp = self.viewport()
         if self._mode in (MODE_SEED_FG, MODE_SEED_BG, MODE_CALIBRATE):
-            self.setCursor(Qt.CrossCursor)
+            vp.setCursor(Qt.CrossCursor)
         else:
-            self.unsetCursor()
+            # Pan mode: let ScrollHandDrag manage its own hand cursor.
+            vp.unsetCursor()
 
     # ----- calibration mode ------------------------------------------------
 
@@ -362,7 +364,7 @@ class Canvas(QGraphicsView):
         if event.button() == Qt.MiddleButton:
             self._mw_panning = True
             self._mw_last = event.position()
-            self.setCursor(Qt.ClosedHandCursor)
+            self.viewport().setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
 
