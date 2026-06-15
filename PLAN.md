@@ -192,7 +192,11 @@ draggable vertex handles.
 - **Phase 4 — SVG export:** mm-scaled output, embedded photo layer toggle, compound paths.
 - **Phase 5 — Tiled printing:** page size/orientation/overlap, per-tile rectangle, page
   number, registration diamonds, photo on/off.
-- **Phase 6 — Polish:** optional Bézier smoothing, save/load project (JSON), undo/redo.
+- **Phase 6 — Polish:** save/load project (JSON); a proper command/undo-redo stack
+  covering vertex edits and object add/delete (the current undo only covers seed
+  strokes); marquee (rubber-band) multi-vertex selection in Edit Vertices mode with
+  group deletion. (Bézier smoothing deprioritized in favor of the Inkscape export
+  flavor, which lets users adjust control points in Inkscape directly.)
 - **Phase 7 — Port readiness (future):** confirm core modules are free of Python-only
   idioms; sketch the C++/Qt structure.
 
