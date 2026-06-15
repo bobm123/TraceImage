@@ -8,7 +8,9 @@ overlays, and editable contour items are drawn on top. Modes:
   * seed_fg / seed_bg - paint inside/outside seeds (Phase 2)
   * edit       - interact with contour vertex handles (Phase 2)
 
-Seed strokes support undo/redo: each painted stroke is one step.
+Holding the middle mouse button (mouse wheel) pans from any mode, restoring the
+previous cursor on release. Seed strokes support undo/redo: each painted stroke
+is one step.
 """
 
 from PySide6.QtCore import Qt, QPoint, QPointF, Signal
@@ -77,6 +79,10 @@ class Canvas(QGraphicsView):
 
         # Brush footprint ring (shown in seed modes).
         self._brush_cursor = None
+
+        # Middle-button (wheel) hold-to-pan state.
+        self._mw_panning = False
+        self._mw_last = None
 
     # ----- photo -----------------------------------------------------------
 
@@ -147,6 +153,13 @@ class Canvas(QGraphicsView):
         self.setDragMode(QGraphicsView.NoDrag)
         self.unsetCursor()
         self._hide_brush_cursor()
+
+    def _apply_mode_cursor(self):
+        """Restore the cursor appropriate to the current mode."""
+        if self._mode in (MODE_SEED_FG, MODE_SEED_BG, MODE_CALIBRATE):
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.unsetCursor()
 
     # ----- calibration mode ------------------------------------------------
 
@@ -315,6 +328,20 @@ class Canvas(QGraphicsView):
     # ----- mouse events ----------------------------------------------------
 
     def mouseMoveEvent(self, event):
+        # Middle-button hold pans the view regardless of mode.
+        if self._mw_panning and (event.buttons() & Qt.MiddleButton):
+            pos = event.position()
+            if self._mw_last is not None:
+                dx = pos.x() - self._mw_last.x()
+                dy = pos.y() - self._mw_last.y()
+                hbar = self.horizontalScrollBar()
+                vbar = self.verticalScrollBar()
+                hbar.setValue(hbar.value() - int(dx))
+                vbar.setValue(vbar.value() - int(dy))
+            self._mw_last = pos
+            event.accept()
+            return
+
         if self._photo_item is not None:
             scene_pt = self.mapToScene(event.position().toPoint())
             self.cursorMoved.emit(scene_pt)
@@ -329,6 +356,14 @@ class Canvas(QGraphicsView):
     def mousePressEvent(self, event):
         if self._photo_item is None:
             super().mousePressEvent(event)
+            return
+
+        # Middle-button starts a temporary pan; the prior mode is unchanged.
+        if event.button() == Qt.MiddleButton:
+            self._mw_panning = True
+            self._mw_last = event.position()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
             return
 
         if self._mode == MODE_CALIBRATE and event.button() == Qt.LeftButton:
@@ -352,6 +387,14 @@ class Canvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
+        # End middle-button pan and restore the mode's cursor.
+        if event.button() == Qt.MiddleButton and self._mw_panning:
+            self._mw_panning = False
+            self._mw_last = None
+            self._apply_mode_cursor()
+            event.accept()
+            return
+
         if (self._mode in (MODE_SEED_FG, MODE_SEED_BG)
                 and self._active_stroke is not None):
             self._active_stroke = None
