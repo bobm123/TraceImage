@@ -17,6 +17,8 @@ from PySide6.QtCore import Qt, QPoint, QPointF, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
+from .editable import VertexHandle
+
 # Interaction modes.
 MODE_PAN = "pan"
 MODE_CALIBRATE = "calibrate"
@@ -81,6 +83,9 @@ class Canvas(QGraphicsView):
         # Bounding-box preview.
         self._bbox_item = None
 
+        # Tile-grid preview (list of line items).
+        self._tile_items = []
+
         # Brush footprint ring (shown in seed modes).
         self._brush_cursor = None
 
@@ -100,6 +105,7 @@ class Canvas(QGraphicsView):
         self._redo_strokes = []
         self._active_stroke = None
         self._bbox_item = None
+        self._tile_items = []
         self._brush_cursor = None
         self._photo_item = self._scene.addPixmap(pixmap)
         self._photo_item.setZValue(0)
@@ -332,6 +338,25 @@ class Canvas(QGraphicsView):
             self._scene.removeItem(self._bbox_item)
             self._bbox_item = None
 
+    # ----- tile-grid preview -----------------------------------------------
+
+    def set_tile_grid(self, segments):
+        """Draw the tile-grid preview from (x1, y1, x2, y2) pixel segments."""
+        self.clear_tile_grid()
+        pen = QPen(QColor(0, 200, 255))
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.DashLine)
+        pen.setWidth(1)
+        for x1, y1, x2, y2 in segments:
+            item = self._scene.addLine(x1, y1, x2, y2, pen)
+            item.setZValue(7)
+            self._tile_items.append(item)
+
+    def clear_tile_grid(self):
+        for item in self._tile_items:
+            self._scene.removeItem(item)
+        self._tile_items = []
+
     # ----- mouse events ----------------------------------------------------
 
     def mouseMoveEvent(self, event):
@@ -418,9 +443,16 @@ class Canvas(QGraphicsView):
         super().keyPressEvent(event)
 
     def contextMenuEvent(self, event):
-        # In edit mode the right button deletes vertices, so leave it alone
-        # there. Otherwise ask the main window to show a quick-action menu.
-        if self._photo_item is None or self._mode == MODE_EDIT:
+        if self._photo_item is None:
             return
+        # In edit mode, a right-click directly on a vertex handle deletes
+        # that vertex; anywhere else (any mode) shows the quick-action menu.
+        if self._mode == MODE_EDIT:
+            vp_pos = self.viewport().mapFromGlobal(event.globalPos())
+            item = self.itemAt(vp_pos)
+            if isinstance(item, VertexHandle):
+                item.request_delete()
+                event.accept()
+                return
         self.contextMenuRequested.emit(event.globalPos())
         event.accept()

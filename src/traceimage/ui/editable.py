@@ -76,13 +76,13 @@ class VertexHandle(QGraphicsEllipseItem):
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.RightButton:
-            self._owner._delete_vertex_interactive(self)
-            event.accept()
-            return
         if event.button() == Qt.LeftButton:
             self._press_pos = self.pos()   # remember drag start for undo
         super().mousePressEvent(event)
+
+    def request_delete(self):
+        """Delete this vertex (invoked by the canvas on right-click)."""
+        self._owner._delete_vertex_interactive(self)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._press_pos is not None:

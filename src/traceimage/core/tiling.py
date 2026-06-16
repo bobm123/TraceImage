@@ -73,6 +73,23 @@ def plan_tiles(content_w, content_h, page, landscape, margin_mm, overlap_mm):
     }
 
 
+def grid_lines_mm(plan, content_w, content_h):
+    """Master-mm positions of the tile (live-area) grid lines.
+
+    Returns (xs, ys): sorted, de-duplicated line positions clamped to the
+    content extent, including the 0 and content_w/content_h boundaries. Used by
+    the GUI to draw a tile-grid preview overlay.
+    """
+    step_x, step_y = plan["step_x"], plan["step_y"]
+    xs = {0.0, content_w}
+    for k in range(plan["ncols"] + 1):
+        xs.add(min(content_w, k * step_x))
+    ys = {0.0, content_h}
+    for j in range(plan["nrows"] + 1):
+        ys.add(min(content_h, j * step_y))
+    return sorted(xs), sorted(ys)
+
+
 def _diamond(cx, cy):
     """A small diamond (rotated square) path centred at (cx, cy), in mm."""
     d = _DIAMOND_MM
@@ -80,25 +97,26 @@ def _diamond(cx, cy):
     body = " ".join(
         "%s %s %s" % ("M" if i == 0 else "L", _num(x), _num(y))
         for i, (x, y) in enumerate(pts))
-    return ('    <path d="%s Z" fill="none" stroke="#000000" '
-            'stroke-width="0.25" />\n' % body)
+    return ('    <path d="%s Z" fill="#000000" stroke="none" />\n' % body)
 
 
-def _registration_marks(plan, dx, dy):
-    """Diamonds at master grid crossings that fall on this tile's page."""
-    step_x, step_y = plan["step_x"], plan["step_y"]
-    ncols, nrows = plan["ncols"], plan["nrows"]
-    margin = (plan["page_w"] - plan["printable_w"]) / 2.0  # == margin_mm
-    x_lo, x_hi = margin - _EPS, margin + plan["printable_w"] + _EPS
-    y_lo, y_hi = margin - _EPS, margin + plan["printable_h"] + _EPS
+def _registration_marks(margin, live_w, live_h):
+    """Filled diamonds at the midpoint of each edge of the tile's live area.
 
-    marks = []
-    for i in range(ncols + 1):
-        for j in range(nrows + 1):
-            px = i * step_x + dx
-            py = j * step_y + dy
-            if x_lo <= px <= x_hi and y_lo <= py <= y_hi:
-                marks.append(_diamond(px, py))
+    Because the live-area edges sit on the master tile-grid lines, the mark on a
+    shared edge lands at the same master coordinate on both neighbouring tiles,
+    so the diamonds coincide when the printed sheets are overlapped.
+    """
+    if live_w <= 0.0 or live_h <= 0.0:
+        return ""
+    cx = margin + live_w / 2.0
+    cy = margin + live_h / 2.0
+    marks = [
+        _diamond(cx, margin),               # top edge
+        _diamond(cx, margin + live_h),      # bottom edge
+        _diamond(margin, cy),               # left edge
+        _diamond(margin + live_w, cy),      # right edge
+    ]
     return "".join(marks)
 
 
@@ -143,8 +161,8 @@ def _tile_svg(content, plan, r, c, content_w, content_h):
         'stroke="#ff00ff" stroke-width="0.2" stroke-dasharray="2,2" />\n'
         % (_num(margin), _num(margin), _num(live_w), _num(live_h)))
 
-    # Registration diamonds.
-    out.append(_registration_marks(plan, dx, dy))
+    # Registration diamonds at the midpoint of each live-area edge.
+    out.append(_registration_marks(margin, live_w, live_h))
 
     # Grid label.
     out.append(
@@ -158,10 +176,11 @@ def _tile_svg(content, plan, r, c, content_w, content_h):
 
 def build_tiles(project, image_bgr=None, page="Letter", landscape=False,
                 margin_mm=6.0, overlap_mm=10.0, embed_photo=True,
-                downscale_max=None, filled=False):
+                downscale_max=None, filled=False, base_name="tile"):
     """Build one page-sized SVG per tile.
 
-    Returns a list of (filename, svg_text), e.g. ("tile_r1_c1.svg", "...").
+    Returns a list of (filename, svg_text); filenames look like
+    "<base_name>-r1c1.svg" (row, then column).
     """
     content, content_w, content_h = svg_export.build_content(
         project, image_bgr=image_bgr, embed_photo=embed_photo,
@@ -173,7 +192,7 @@ def build_tiles(project, image_bgr=None, page="Letter", landscape=False,
     tiles = []
     for r in range(plan["nrows"]):
         for c in range(plan["ncols"]):
-            name = "tile_r%d_c%d.svg" % (r + 1, c + 1)
+            name = "%s-r%dc%d.svg" % (base_name, r + 1, c + 1)
             tiles.append((name, _tile_svg(content, plan, r, c,
                                           content_w, content_h)))
     return tiles

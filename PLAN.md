@@ -200,8 +200,10 @@ draggable vertex handles.
   object-create / Trace-Poly into the undo history (currently those clear the stack).
   (Bézier smoothing deprioritized in favor of the Inkscape export flavor, which lets
   users adjust control points in Inkscape directly.)
-- **Phase 7 — Port readiness (future):** confirm core modules are free of Python-only
-  idioms; sketch the C++/Qt structure.
+- **Phase 7 — Port readiness:** ✅ audited `core/` for Python-only idioms (none found —
+  only library bindings need C++ equivalents: NumPy→cv::Mat, json→a JSON lib, base64
+  helper, closures→std::function) and sketched the C++/Qt structure. See
+  [`PORTING.md`](PORTING.md).
 
 ---
 

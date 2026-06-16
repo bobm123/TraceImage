@@ -3,7 +3,8 @@
 A desktop GUI tool for tracing the outlines of objects in photographs and exporting
 **true-scale SVG** files, with ruler-based calibration and tiled large-format printing.
 
-See [`PLAN.md`](PLAN.md) for the full design and rationale.
+See [`PLAN.md`](PLAN.md) for the full design and rationale, and
+[`PORTING.md`](PORTING.md) for the anticipated C++/Qt port.
 
 ## Status
 
@@ -14,7 +15,7 @@ See [`PLAN.md`](PLAN.md) for the full design and rationale.
 - **Phase 4 — SVG export:** ✅ mm-scaled `<svg>` with matching viewBox, optional base64-embedded (downscalable) photo layer, one compound `<path>` per object with `fill-rule="evenodd"`, outline or filled. Plain (browser-friendly) or **Inkscape** flavor (named layers + mm document units) so nodes can be fine-tuned in Inkscape.
 - **Phase 5 — Tiled printing:** ✅ split the drawing across Letter/A4/Legal/A3 pages (portrait/landscape) at true 1:1, with per-tile live-area rectangle, R#-C# label, and diamond registration marks that coincide across overlapping sheets; photo on/off.
 - **Phase 6 — Polish (in progress):** ✅ save/load project as JSON (File → Save/Open Project; calibration, margin, units, traced polygons, source-image reference); ✅ undo/redo command stack for vertex edits (move/add/delete) and object delete; ✅ marquee (rubber-band) multi-vertex selection in Edit Vertices mode with **Delete** to group-delete (one undo step); if a delete would leave a contour with fewer than 3 vertices the whole contour is removed (and restored on undo), since a sub-3 contour is not a polygon. Ctrl+Z/Y dispatch by context — while seeding they undo/redo seed strokes, otherwise the edit command stack. Still to come: folding object-create/trace into the undo history. (Bézier smoothing deprioritized in favor of the Inkscape export flavor.)
-- **Phase 7 — Port readiness:** not started.
+- **Phase 7 — Port readiness:** ✅ audited the core for Python-only idioms (none — only library bindings need C++ equivalents) and sketched the C++/Qt structure in [`PORTING.md`](PORTING.md).
 
 Keyboard: **Ctrl+O** open project, **Ctrl+S** save project, **Ctrl+Shift+O** import photo, **Ctrl+E** export SVG, **Ctrl+Z/Ctrl+Y** undo/redo (seed strokes while seeding; vertex/object edits otherwise).
 
@@ -85,10 +86,13 @@ form works without installing.)
    fine-tune control points there.
 8. **File → Export Print Tiles…** pick page size, orientation, printer margin
    and overlap to split the drawing across pages at 1:1. Each tile carries a
-   live-area rectangle, an R#-C# label, and diamond registration marks that
-   line up when you overlap the printed sheets. Print with auto-scaling / "fit
+   live-area rectangle, an R#-C# label, and a filled diamond at the middle of
+   each edge; the diamonds on a shared edge line up when you overlap the printed
+   sheets. Files are named `<photo>-rNcM.svg`. Print with auto-scaling / "fit
    to page" OFF; if the diamonds don't line up at the stated overlap, scaling
-   was applied somewhere.
+   was applied somewhere. **View → View Tiles** overlays the page-tile grid on
+   the canvas (using the most recent print settings) so you can preview the
+   split before exporting.
 9. **Projects:** **File → Save Project** (Ctrl+S) writes a `.tiproj.json` with
    the calibration, margin, units, traced polygons and a reference to the
    source image; **File → Open Project** (Ctrl+O) reloads it (prompting you to

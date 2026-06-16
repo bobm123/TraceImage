@@ -61,22 +61,39 @@ def test_build_tiles_count_and_naming():
     plan = tiling.plan_tiles(400, 300, "Letter", False, 6.0, 10.0)
     assert len(tiles) == plan["ncols"] * plan["nrows"]
     names = [n for n, _ in tiles]
-    assert "tile_r1_c1.svg" in names
+    assert "tile-r1c1.svg" in names
+    # custom base name -> "<base>-rNcM.svg"
+    named = tiling.build_tiles(proj, embed_photo=False, page="Letter",
+                               margin_mm=6.0, overlap_mm=10.0,
+                               base_name="photo")
+    assert "photo-r1c1.svg" in [n for n, _ in named]
     # every tile is a page-sized svg
     for _, svg in tiles:
         assert 'width="215.9mm"' in svg
         assert "</svg>" in svg
 
 
-def test_tiles_have_labels_and_marks():
+def test_tiles_have_labels_and_filled_marks():
     proj = _project(mpp=1.0, w_px=400, h_px=300)
     tiles = dict(tiling.build_tiles(proj, embed_photo=False, page="Letter",
                                     margin_mm=6.0, overlap_mm=10.0))
-    svg = tiles["tile_r1_c1.svg"]
+    svg = tiles["tile-r1c1.svg"]
     assert "R1-C1" in svg
     assert "clipPath" in svg
-    # registration diamonds are small closed paths
+    # registration diamonds are filled closed paths
     assert svg.count("Z") >= 1
+    assert 'fill="#000000" stroke="none"' in svg
+
+
+def test_grid_lines_mm():
+    plan = tiling.plan_tiles(400, 300, "Letter", False, 6.0, 10.0)
+    xs, ys = tiling.grid_lines_mm(plan, 400, 300)
+    # boundaries are always present and clamped to the content extent
+    assert xs[0] == 0.0 and xs[-1] == 400
+    assert ys[0] == 0.0 and ys[-1] == 300
+    # one interior seam per extra column/row
+    assert len(xs) == plan["ncols"] + 1
+    assert len(ys) == plan["nrows"] + 1
 
 
 def test_registration_marks_coincide_across_columns():

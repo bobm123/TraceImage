@@ -47,6 +47,9 @@ class MainWindow(QMainWindow):
         self._objects = []             # list[ObjectLayer]
         self._active_index = -1
         self._polygon_counter = 0      # monotonic, for default polygon names
+        # Last-used tiling settings, also driving the View -> Tile Grid overlay.
+        self._tiling_settings = {"page": "Letter", "landscape": False,
+                                 "margin_mm": 6.0, "overlap_mm": 10.0}
 
         # Undo stack for vertex/object edits (seed strokes use the canvas's own
         # stack; Ctrl+Z/Y dispatch between them by mode).
@@ -112,6 +115,11 @@ class MainWindow(QMainWindow):
         self.act_show_bbox.setChecked(True)
         self.act_show_bbox.triggered.connect(self._update_bbox)
 
+        self.act_view_tiles = QAction("View &Tiles", self, checkable=True)
+        self.act_view_tiles.setToolTip(
+            "Overlay the page-tile grid for the current print settings")
+        self.act_view_tiles.triggered.connect(self._update_tile_grid)
+
         self.act_calibrate = QAction("&Calibrate Scale…", self)
         self.act_calibrate.triggered.connect(self.start_calibration)
 
@@ -136,6 +144,11 @@ class MainWindow(QMainWindow):
         self.act_run_seg = QAction("Trace &Poly", self)
         self.act_run_seg.setToolTip("Trace a polygon from the seeds (GrabCut)")
         self.act_run_seg.triggered.connect(self.run_segmentation)
+
+        self.act_new_object = QAction("New &Polygon", self)
+        self.act_new_object.setShortcut("Ctrl+N")
+        self.act_new_object.setToolTip("Start a new polygon and begin marking inside it")
+        self.act_new_object.triggered.connect(self.add_polygon)
 
         # Undo / redo: dispatch to seed strokes or the edit command stack.
         self.act_undo = QAction("&Undo", self)
@@ -177,6 +190,7 @@ class MainWindow(QMainWindow):
         m_view.addAction(self.act_fit)
         m_view.addSeparator()
         m_view.addAction(self.act_show_bbox)
+        m_view.addAction(self.act_view_tiles)
         m_view.addSeparator()
         m_units = m_view.addMenu("Display &Units")
         for unit in ("mm", "cm", "in"):
@@ -190,29 +204,23 @@ class MainWindow(QMainWindow):
         m_tools.addAction(self.act_mode_bg)
         m_tools.addAction(self.act_mode_edit)
         m_tools.addSeparator()
+        m_tools.addAction(self.act_new_object)
         m_tools.addAction(self.act_run_seg)
         m_tools.addAction(self.act_clear_seeds)
 
     def _build_toolbar(self):
+        # Only the high-frequency, non-redundant controls live here; the
+        # mode toggles also serve as a current-mode indicator. Everything
+        # else is in the menus, shortcuts, and right-click menu.
         tb = self.addToolBar("Main")
         tb.setMovable(False)
-        tb.addAction(self.act_open_project)
-        tb.addAction(self.act_save_project)
-        tb.addSeparator()
-        tb.addAction(self.act_open)
-        tb.addAction(self.act_export)
-        tb.addAction(self.act_export_tiles)
-        tb.addSeparator()
-        tb.addAction(self.act_zoom_out)
-        tb.addAction(self.act_fit)
-        tb.addAction(self.act_zoom_in)
-        tb.addSeparator()
-        tb.addAction(self.act_calibrate)
-        tb.addSeparator()
         tb.addAction(self.act_mode_pan)
         tb.addAction(self.act_mode_fg)
         tb.addAction(self.act_mode_bg)
         tb.addAction(self.act_mode_edit)
+        tb.addSeparator()
+        tb.addAction(self.act_new_object)
+        tb.addAction(self.act_run_seg)
         tb.addSeparator()
         tb.addWidget(QLabel(" Brush: "))
         self._brush_spin = QSpinBox(self)
@@ -221,12 +229,6 @@ class MainWindow(QMainWindow):
         self._brush_spin.setSuffix(" px")
         self._brush_spin.valueChanged.connect(self.canvas.set_brush_radius)
         tb.addWidget(self._brush_spin)
-        tb.addSeparator()
-        tb.addAction(self.act_run_seg)
-        tb.addAction(self.act_clear_seeds)
-        tb.addSeparator()
-        tb.addAction(self.act_undo)
-        tb.addAction(self.act_redo)
 
     def _build_object_dock(self):
         dock = QDockWidget("Objects", self)
@@ -241,7 +243,7 @@ class MainWindow(QMainWindow):
 
         row = QHBoxLayout()
         btn_new = QPushButton("New", panel)
-        btn_new.clicked.connect(self.new_object)
+        btn_new.clicked.connect(self.add_polygon)
         btn_del = QPushButton("Delete", panel)
         btn_del.clicked.connect(self.delete_active_object)
         btn_ren = QPushButton("Rename", panel)
@@ -284,7 +286,8 @@ class MainWindow(QMainWindow):
                   self.act_mode_bg, self.act_mode_edit, self.act_run_seg,
                   self.act_clear_seeds, self.act_export,
                   self.act_export_tiles, self.act_show_bbox,
-                  self.act_save_project):
+                  self.act_view_tiles,
+                  self.act_save_project, self.act_new_object):
             a.setEnabled(enabled)
 
     # ----- photo loading ---------------------------------------------------
@@ -495,11 +498,16 @@ class MainWindow(QMainWindow):
         return self.act_mode_edit.isChecked()
 
     def _show_canvas_menu(self, global_pos):
-        """Quick-action context menu on right-click (pan/seed modes)."""
+        """Quick-action context menu on right-click -- the workflow hub."""
         menu = QMenu(self)
         menu.addAction(self.act_mode_fg)
         menu.addAction(self.act_mode_bg)
-
+        menu.addAction(self.act_run_seg)       # Trace Poly
+        menu.addAction(self.act_new_object)    # New Polygon
+        menu.addSeparator()
+        menu.addAction(self.act_mode_edit)
+        menu.addAction(self.act_mode_pan)
+        menu.addSeparator()
         brush_menu = menu.addMenu("Brush Size")
         cur = int(round(self.canvas.brush_radius()))
         for sz in (10, 20, 40, 80, 120):
@@ -508,8 +516,7 @@ class MainWindow(QMainWindow):
             a.setChecked(sz == cur)
             a.triggered.connect(
                 lambda _=False, s=sz: self._brush_spin.setValue(s))
-
-        menu.addAction(self.act_run_seg)       # "Trace Poly"
+        menu.addAction(self.act_clear_seeds)
         menu.addSeparator()
         menu.addAction(self.act_undo)
         menu.addAction(self.act_redo)
@@ -631,6 +638,14 @@ class MainWindow(QMainWindow):
                             self._objects[self._active_index].name), 6000)
 
     # ----- object management -----------------------------------------------
+
+    def add_polygon(self):
+        """New Polygon: create a polygon and start marking inside it."""
+        if not self.canvas.has_photo():
+            return
+        self.new_object()
+        self.act_mode_fg.setChecked(True)
+        self._mode_seed_fg()
 
     def new_object(self):
         if not self.canvas.has_photo():
@@ -830,11 +845,13 @@ class MainWindow(QMainWindow):
         if not self.canvas.has_photo() or not self.act_show_bbox.isChecked():
             self.canvas.clear_bbox()
             self._refresh_size_label()
+            self._update_tile_grid()
             return
         pts = self._all_points()
         if not pts:
             self.canvas.clear_bbox()
             self._refresh_size_label()
+            self._update_tile_grid()
             return
         box = geo.bbox_of_points(pts)
         c = self.project.calibration
@@ -843,6 +860,52 @@ class MainWindow(QMainWindow):
         box = box.expanded(margin_px)
         self.canvas.set_bbox(box.min_x, box.min_y, box.width, box.height)
         self._refresh_size_label(box)
+        self._update_tile_grid()
+
+    def _update_tile_grid(self):
+        """Refresh the View -> Tiles overlay (page-tile grid on the canvas)."""
+        if not self.canvas.has_photo() or not self.act_view_tiles.isChecked():
+            self.canvas.clear_tile_grid()
+            return
+        c = self.project.calibration
+        pts = self._all_points()
+        if not c.is_calibrated or not pts:
+            self.canvas.clear_tile_grid()
+            if not c.is_calibrated:
+                self.statusBar().showMessage(
+                    "Calibrate the scale to preview print tiles.", 4000)
+            return
+        mpp = c.mm_per_pixel
+        box = geo.bbox_of_points(pts)
+        margin_px = self.project.margin_mm / mpp
+        ox = box.min_x - margin_px
+        oy = box.min_y - margin_px
+        content_w_mm = (box.width + 2.0 * margin_px) * mpp
+        content_h_mm = (box.height + 2.0 * margin_px) * mpp
+        s = self._tiling_settings
+        try:
+            plan = tiling.plan_tiles(content_w_mm, content_h_mm, s["page"],
+                                     s["landscape"], s["margin_mm"],
+                                     s["overlap_mm"])
+        except ValueError as exc:
+            self.canvas.clear_tile_grid()
+            self.statusBar().showMessage("Tile preview: %s" % (exc,), 4000)
+            return
+        xs, ys = tiling.grid_lines_mm(plan, content_w_mm, content_h_mm)
+        left, right = ox, ox + content_w_mm / mpp
+        top, bottom = oy, oy + content_h_mm / mpp
+        segments = []
+        for x_mm in xs:
+            x_px = ox + x_mm / mpp
+            segments.append((x_px, top, x_px, bottom))
+        for y_mm in ys:
+            y_px = oy + y_mm / mpp
+            segments.append((left, y_px, right, y_px))
+        self.canvas.set_tile_grid(segments)
+        self.statusBar().showMessage(
+            "Tile preview: %d × %d pages (%s%s)."
+            % (plan["ncols"], plan["nrows"], s["page"],
+               ", landscape" if s["landscape"] else ""), 4000)
 
     def _on_margin_changed(self, value):
         self.project.margin_mm = float(value)
@@ -938,12 +1001,19 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.Accepted:
             return
         page, landscape, margin_mm, overlap_mm, embed, filled = dlg.values()
+        # Remember the settings so the View -> Tiles overlay matches.
+        self._tiling_settings = {"page": page, "landscape": landscape,
+                                 "margin_mm": margin_mm,
+                                 "overlap_mm": overlap_mm}
+        self._update_tile_grid()
 
         out_dir = QFileDialog.getExistingDirectory(
             self, "Choose a folder for the tile SVGs", os.getcwd())
         if not out_dir:
             return
 
+        base_name = os.path.splitext(
+            os.path.basename(self._loaded.path or "tile"))[0]
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
@@ -952,7 +1022,7 @@ class MainWindow(QMainWindow):
                     image_bgr=self._loaded.data if embed else None,
                     page=page, landscape=landscape,
                     margin_mm=margin_mm, overlap_mm=overlap_mm,
-                    embed_photo=embed, filled=filled)
+                    embed_photo=embed, filled=filled, base_name=base_name)
                 for name, svg in tiles:
                     with open(os.path.join(out_dir, name), "w",
                               encoding="utf-8") as fh:
