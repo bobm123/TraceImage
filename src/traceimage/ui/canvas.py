@@ -154,7 +154,7 @@ class Canvas(QGraphicsView):
     def enter_pan_mode(self):
         self._mode = MODE_PAN
         self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.unsetCursor()
+        self._apply_mode_cursor()
         self._hide_brush_cursor()
 
     def enter_edit_mode(self):
@@ -162,16 +162,21 @@ class Canvas(QGraphicsView):
         # canvas while still dragging individual handles.
         self._mode = MODE_EDIT
         self.setDragMode(QGraphicsView.RubberBandDrag)
-        self.unsetCursor()
+        self._apply_mode_cursor()
         self._hide_brush_cursor()
 
     def _apply_mode_cursor(self):
-        """Restore the cursor appropriate to the current mode."""
+        """Set the viewport cursor to match the current mode.
+
+        Cursors are set on the viewport (not the view) so they aren't shadowed
+        by the cursor ScrollHandDrag puts on the viewport in pan mode.
+        """
         vp = self.viewport()
         if self._mode in (MODE_SEED_FG, MODE_SEED_BG, MODE_CALIBRATE):
             vp.setCursor(Qt.CrossCursor)
+        elif self._mode == MODE_PAN:
+            vp.setCursor(Qt.OpenHandCursor)
         else:
-            # Pan mode: let ScrollHandDrag manage its own hand cursor.
             vp.unsetCursor()
 
     # ----- calibration mode ------------------------------------------------
@@ -181,7 +186,7 @@ class Canvas(QGraphicsView):
         self._calib_points = []
         self._mode = MODE_CALIBRATE
         self.setDragMode(QGraphicsView.NoDrag)
-        self.setCursor(Qt.CrossCursor)
+        self.viewport().setCursor(Qt.CrossCursor)
         self._hide_brush_cursor()
 
     def cancel_calibration(self):
@@ -224,7 +229,7 @@ class Canvas(QGraphicsView):
         """label: 'fg' (inside) or 'bg' (outside)."""
         self._mode = MODE_SEED_FG if label == "fg" else MODE_SEED_BG
         self.setDragMode(QGraphicsView.NoDrag)
-        self.setCursor(Qt.CrossCursor)
+        self.viewport().setCursor(Qt.CrossCursor)
 
     def clear_seeds(self):
         for s in self._seed_strokes:
