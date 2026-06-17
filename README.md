@@ -97,9 +97,9 @@ form works without installing.)
    if unknown); the **Scale** control resizes the output (50% = half, 200% =
    double). Print with auto-scaling / "fit to page" OFF.
 9. **Projects:** **File → Save Project** (Ctrl+S) writes a `.tiproj.json` with
-   the calibration, margin, units, traced polygons and a reference to the
-   source image; **File → Open Project** (Ctrl+O) reloads it (prompting you to
-   locate the image if it has moved).
+   the calibration, margin, units, traced polygons, the tiling settings, and a
+   reference to the source image; **File → Open Project** (Ctrl+O) reloads it
+   (prompting you to locate the image if it has moved).
 
 Notes / current rough edges:
 

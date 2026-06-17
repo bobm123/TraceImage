@@ -317,6 +317,11 @@ class MainWindow(QMainWindow):
 
         self._embed_check = QCheckBox("Include photo", box)
         form.addRow(self._embed_check)
+        self._crop_check = QCheckBox("Crop photo to bounding box", box)
+        self._crop_check.setToolTip(
+            "Embed only the photo inside the traced bounding box, so it does "
+            "not extend past the trace on the printed tiles.")
+        form.addRow(self._crop_check)
         self._filled_check = QCheckBox("Fill objects", box)
         form.addRow(self._filled_check)
 
@@ -386,6 +391,7 @@ class MainWindow(QMainWindow):
         if self._loaded is None:
             return
         self._sync_model()
+        self._capture_tiling_to_project()
         base = os.path.splitext(
             os.path.basename(self._loaded.path or "project"))[0]
         default_path = os.path.join(os.getcwd(), base + ".tiproj.json")
@@ -448,6 +454,7 @@ class MainWindow(QMainWindow):
         self.act_mode_pan.setChecked(True)
         self._mode_pan()
         self._margin_spin.setValue(self.project.margin_mm)
+        self._apply_tiling_to_panel()
         self.set_unit(self.project.calibration.display_unit)
         self._refresh_object_list()
         self._refresh_scale_readout()
@@ -925,8 +932,43 @@ class MainWindow(QMainWindow):
             "overlap_mm": self._overlap_spin.value(),
             "scale": self._scale_spin.value() / 100.0,
             "embed": self._embed_check.isChecked(),
+            "crop": self._crop_check.isChecked(),
             "filled": self._filled_check.isChecked(),
         }
+
+    def _capture_tiling_to_project(self):
+        """Store the panel's tiling controls into the project (for saving)."""
+        self.project.tiling = {
+            "page": self._page_combo.currentText(),
+            "landscape": self._orient_combo.currentText() == "Landscape",
+            "margin_mm": self._tmargin_spin.value(),
+            "overlap_mm": self._overlap_spin.value(),
+            "scale_percent": self._scale_spin.value(),
+            "embed_photo": self._embed_check.isChecked(),
+            "crop_photo": self._crop_check.isChecked(),
+            "filled": self._filled_check.isChecked(),
+        }
+
+    def _apply_tiling_to_panel(self):
+        """Load the project's saved tiling settings into the panel controls."""
+        t = self.project.tiling or {}
+        widgets = (self._page_combo, self._orient_combo, self._tmargin_spin,
+                   self._overlap_spin, self._scale_spin, self._embed_check,
+                   self._crop_check, self._filled_check)
+        for w in widgets:
+            w.blockSignals(True)
+        self._page_combo.setCurrentText(t.get("page", "Letter"))
+        self._orient_combo.setCurrentText(
+            "Landscape" if t.get("landscape") else "Portrait")
+        self._tmargin_spin.setValue(float(t.get("margin_mm", 6.0)))
+        self._overlap_spin.setValue(float(t.get("overlap_mm", 10.0)))
+        self._scale_spin.setValue(int(t.get("scale_percent", 100)))
+        self._embed_check.setChecked(bool(t.get("embed_photo", False)))
+        self._crop_check.setChecked(bool(t.get("crop_photo", False)))
+        self._filled_check.setChecked(bool(t.get("filled", False)))
+        for w in widgets:
+            w.blockSignals(False)
+        self._update_tile_grid()
 
     def _base_mm_per_pixel(self):
         """mm/px from calibration, or an uncalibrated default from image DPI."""
@@ -1098,7 +1140,8 @@ class MainWindow(QMainWindow):
                     page=p["page"], landscape=p["landscape"],
                     margin_mm=p["margin_mm"], overlap_mm=p["overlap_mm"],
                     embed_photo=p["embed"], filled=p["filled"],
-                    base_name=base_name, mm_per_pixel=mpp)
+                    base_name=base_name, mm_per_pixel=mpp,
+                    crop_photo=p["crop"])
                 for name, svg in tiles:
                     with open(os.path.join(out_dir, name), "w",
                               encoding="utf-8") as fh:

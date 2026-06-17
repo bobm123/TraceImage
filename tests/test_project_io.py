@@ -62,6 +62,31 @@ def test_uncalibrated_round_trip():
     assert p2.objects == []
 
 
+def test_tiling_round_trip():
+    p = _sample_project()
+    p.tiling = {"page": "A4", "landscape": True, "margin_mm": 8.0,
+                "overlap_mm": 15.0, "scale_percent": 75, "embed_photo": True,
+                "crop_photo": True, "filled": True}
+    p2 = pio.project_from_dict(pio.project_to_dict(p))
+    assert p2.tiling == p.tiling
+
+
+def test_missing_tiling_gets_defaults():
+    from traceimage.model import default_tiling
+    p = _sample_project()
+    d = pio.project_to_dict(p)
+    d.pop("tiling")                       # simulate an older project file
+    assert pio.project_from_dict(d).tiling == default_tiling()
+
+
+def test_partial_tiling_merges_defaults():
+    p = _sample_project()
+    d = pio.project_to_dict(p)
+    d["tiling"] = {"page": "Legal"}
+    t = pio.project_from_dict(d).tiling
+    assert t["page"] == "Legal" and t["overlap_mm"] == 10.0
+
+
 def test_unsupported_version_raises():
     with pytest.raises(pio.ProjectIOError):
         pio.project_from_dict({"version": 999})

@@ -1,9 +1,10 @@
 """Project save/load as JSON (Phase 6).
 
 Serialises a model.Project -- calibration, margin, display unit, the source
-image reference, and every traced object's contours (points in pixel
-coordinates, role, style) -- to a plain JSON document and back. Pure Python +
-json, so it is fully round-trippable and testable without Qt or OpenCV.
+image reference, the tiled-printing settings, and every traced object's
+contours (points in pixel coordinates, role, style) -- to a plain JSON document
+and back. Pure Python + json, so it is fully round-trippable and testable
+without Qt or OpenCV.
 
 The pixel image itself is *not* embedded; only its path and dimensions are
 stored, and the UI reloads the image from that path when opening a project.
@@ -11,7 +12,8 @@ stored, and the UI reloads the image from that path when opening a project.
 
 import json
 
-from ..model import Calibration, Contour, Project, Style, TracedObject
+from ..model import (Calibration, Contour, Project, Style, TracedObject,
+                     default_tiling)
 
 FORMAT_VERSION = 1
 
@@ -60,6 +62,7 @@ def project_to_dict(project):
             "display_unit": project.calibration.display_unit,
         },
         "margin_mm": project.margin_mm,
+        "tiling": dict(project.tiling),
         "objects": [_object_to_dict(o) for o in project.objects],
     }
 
@@ -111,6 +114,11 @@ def project_from_dict(d):
         display_unit=cal.get("display_unit", "mm"))
 
     project.margin_mm = float(d.get("margin_mm", 5.0))
+
+    tiling = default_tiling()
+    tiling.update(d.get("tiling") or {})   # tolerate older files / missing keys
+    project.tiling = tiling
+
     project.objects = [_object_from_dict(o) for o in d.get("objects", [])]
     return project
 

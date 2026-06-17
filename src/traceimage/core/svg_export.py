@@ -6,25 +6,18 @@ opens and prints at true physical size (see PLAN.md sec. 5):
   * width/height = content bounding box (across all objects' contours) plus the
     configured margin, multiplied by mm_per_pixel;
   * <g id="photo"> -- optional, the source photo base64-embedded and positioned
-    to register with the vector layer; can be downscaled to keep size sane;
+    to register with the vector layer; can be downscaled or cropped to the
+    bounding box to keep size sane and avoid bleed past the trace;
   * <g id="trace"> -- one compound <path> per object (M..Z outer + M..Z per
     hole) with fill-rule="evenodd" so holes render as holes.
 
-Two flavors:
-  * plain (default) -- a minimal SVG any browser opens;
-  * inkscape -- adds inkscape/sodipodi namespaces, a <sodipodi:namedview> with
-    document-units="mm", and marks the photo/trace groups as named, editable
-    layers (photo locked) so the user can fine-tune nodes in Inkscape.
-
-build_content() returns just the inner photo+trace fragment in master mm
-coordinates (origin at the top-left of the margin box); it is reused by both
-single-file export here and by tiled printing in tiling.py.
-
-Pure arithmetic and string building (plus a lazy cv2 import only when embedding
-the photo), so it ports cleanly to C/C++.
+Two flavors: plain (default; any browser opens it) and inkscape (named layers +
+mm namedview). build_content() returns the inner fragment in master mm
+coordinates and is reused by single-file export and by tiled printing.
 """
 
 import base64
+import math
 
 from . import geometry as geo
 
@@ -91,17 +84,22 @@ def _object_path(obj, ox, oy, mpp, filled):
         % (d, fill, style.stroke, _num(style.stroke_width_mm)))
 
 
-def _photo_image_tag(image_bgr, ox, oy, mpp, pixel_w, pixel_h, downscale_max):
-    """Build the <image> element with the embedded source photo."""
+def _photo_image_tag(img, off_x, off_y, w_px, h_px, ox, oy, mpp,
+                     downscale_max):
+    """Build the <image> element for a (possibly cropped) raster.
+
+    `img` is the BGR array to embed; its top-left corresponds to source-image
+    pixel (off_x, off_y) and it is `w_px` x `h_px` source pixels (before any
+    downscaling). It is placed in master mm space relative to origin (ox, oy).
+    """
     import cv2  # lazy: only needed when embedding the photo
 
-    img = image_bgr
     if downscale_max:
-        longest = max(pixel_w, pixel_h)
+        longest = max(w_px, h_px)
         if longest > downscale_max:
             scale = float(downscale_max) / float(longest)
-            new_w = max(1, int(round(pixel_w * scale)))
-            new_h = max(1, int(round(pixel_h * scale)))
+            new_w = max(1, int(round(w_px * scale)))
+            new_h = max(1, int(round(h_px * scale)))
             img = cv2.resize(img, (new_w, new_h),
                              interpolation=cv2.INTER_AREA)
 
@@ -110,10 +108,10 @@ def _photo_image_tag(image_bgr, ox, oy, mpp, pixel_w, pixel_h, downscale_max):
         raise ExportError("failed to encode embedded photo")
     b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
-    x_mm = (0.0 - ox) * mpp
-    y_mm = (0.0 - oy) * mpp
-    w_mm = pixel_w * mpp
-    h_mm = pixel_h * mpp
+    x_mm = (off_x - ox) * mpp
+    y_mm = (off_y - oy) * mpp
+    w_mm = w_px * mpp
+    h_mm = h_px * mpp
     href = "data:image/png;base64," + b64
     return (
         '    <image x="%s" y="%s" width="%s" height="%s" '
@@ -123,15 +121,17 @@ def _photo_image_tag(image_bgr, ox, oy, mpp, pixel_w, pixel_h, downscale_max):
 
 def build_content(project, image_bgr=None, embed_photo=True,
                   downscale_max=None, filled=False, as_layers=False,
-                  mm_per_pixel=None):
+                  mm_per_pixel=None, crop_photo=False):
     """Build the inner photo+trace fragment and return (content, w_mm, h_mm).
 
     Coordinates use master mm space with origin (0, 0) at the top-left of the
     margin box. `as_layers` adds Inkscape layer attributes to the groups.
 
     `mm_per_pixel` overrides the project's calibration (used by tiling to apply
-    a scale factor or an uncalibrated default). If omitted, the project must be
-    calibrated. Raises ExportError otherwise or if there are no contours.
+    a scale factor or an uncalibrated default). `crop_photo` embeds only the
+    part of the photo inside the content bounding box (so it doesn't bleed past
+    the trace in tiled prints). Raises ExportError if uncalibrated without an
+    override, or if there are no contours.
     """
     mpp = mm_per_pixel
     if mpp is None:
@@ -160,11 +160,26 @@ def build_content(project, image_bgr=None, embed_photo=True,
     if embed_photo:
         if image_bgr is None:
             raise ExportError("embed_photo requested but no image was provided")
-        out.append('  <g id="photo"%s>\n' % photo_attrs)
-        out.append(_photo_image_tag(image_bgr, ox, oy, mpp,
-                                    project.pixel_width, project.pixel_height,
-                                    downscale_max))
-        out.append('  </g>\n')
+        pw, ph = project.pixel_width, project.pixel_height
+        if crop_photo:
+            # Embed only the bounding-box region so the photo doesn't extend
+            # past the trace into page whitespace when tiled.
+            cx0 = max(0, int(math.floor(bbox.min_x)))
+            cy0 = max(0, int(math.floor(bbox.min_y)))
+            cx1 = min(pw, int(math.ceil(bbox.max_x)))
+            cy1 = min(ph, int(math.ceil(bbox.max_y)))
+            if cx1 > cx0 and cy1 > cy0:
+                sub = image_bgr[cy0:cy1, cx0:cx1]
+                out.append('  <g id="photo"%s>\n' % photo_attrs)
+                out.append(_photo_image_tag(sub, cx0, cy0, cx1 - cx0,
+                                            cy1 - cy0, ox, oy, mpp,
+                                            downscale_max))
+                out.append('  </g>\n')
+        else:
+            out.append('  <g id="photo"%s>\n' % photo_attrs)
+            out.append(_photo_image_tag(image_bgr, 0, 0, pw, ph,
+                                        ox, oy, mpp, downscale_max))
+            out.append('  </g>\n')
 
     out.append('  <g id="trace"%s>\n' % trace_attrs)
     for obj in project.objects:
@@ -176,14 +191,16 @@ def build_content(project, image_bgr=None, embed_photo=True,
 
 
 def build_svg(project, image_bgr=None, embed_photo=True,
-              downscale_max=None, filled=False, inkscape=False):
+              downscale_max=None, filled=False, inkscape=False,
+              crop_photo=False):
     """Build and return the full SVG document text for `project`.
 
     inkscape=True emits the Inkscape flavor (named layers + namedview).
     """
     content, w_mm, h_mm = build_content(
         project, image_bgr=image_bgr, embed_photo=embed_photo,
-        downscale_max=downscale_max, filled=filled, as_layers=inkscape)
+        downscale_max=downscale_max, filled=filled, as_layers=inkscape,
+        crop_photo=crop_photo)
 
     out = []
     out.append('<?xml version="1.0" encoding="UTF-8"?>\n')

@@ -7,9 +7,8 @@ Splits the master, millimetre-sized drawing into page-sized tiles with overlap
     clipped to the page's printable area);
   * a rectangle outlining this tile's live (non-overlap) area;
   * a grid label (e.g. R2-C3);
-  * diamond registration marks at fixed master-coordinate grid crossings, so a
-    mark on one tile's overlap band coincides with the same mark on the
-    neighbouring tile when the sheets are overlapped.
+  * a filled diamond at the midpoint of each live-area edge, placed so a mark on
+    a shared edge coincides on both neighbouring tiles when overlapped.
 
 True 1:1 output depends on printing with auto-scaling / "fit to page" OFF; the
 registration diamonds double as a scale check.
@@ -91,7 +90,7 @@ def grid_lines_mm(plan, content_w, content_h):
 
 
 def _diamond(cx, cy):
-    """A small diamond (rotated square) path centred at (cx, cy), in mm."""
+    """A small filled diamond (rotated square) centred at (cx, cy), in mm."""
     d = _DIAMOND_MM
     pts = [(cx, cy - d), (cx + d, cy), (cx, cy + d), (cx - d, cy)]
     body = " ".join(
@@ -177,17 +176,18 @@ def _tile_svg(content, plan, r, c, content_w, content_h):
 def build_tiles(project, image_bgr=None, page="Letter", landscape=False,
                 margin_mm=6.0, overlap_mm=10.0, embed_photo=True,
                 downscale_max=None, filled=False, base_name="tile",
-                mm_per_pixel=None):
+                mm_per_pixel=None, crop_photo=False):
     """Build one page-sized SVG per tile.
 
     Returns a list of (filename, svg_text); filenames look like
     "<base_name>-r1c1.svg" (row, then column). `mm_per_pixel` overrides the
     project's calibration (for an uncalibrated default size or a scale factor).
+    `crop_photo` clips the embedded photo to the content bounding box.
     """
     content, content_w, content_h = svg_export.build_content(
         project, image_bgr=image_bgr, embed_photo=embed_photo,
         downscale_max=downscale_max, filled=filled, as_layers=False,
-        mm_per_pixel=mm_per_pixel)
+        mm_per_pixel=mm_per_pixel, crop_photo=crop_photo)
 
     plan = plan_tiles(content_w, content_h, page, landscape,
                       margin_mm, overlap_mm)

@@ -8,6 +8,20 @@ Coordinate convention: origin top-left, y increases downward.
 """
 
 
+def default_tiling():
+    """Default tiled-printing settings (saved with the project)."""
+    return {
+        "page": "Letter",
+        "landscape": False,
+        "margin_mm": 6.0,
+        "overlap_mm": 10.0,
+        "scale_percent": 100,
+        "embed_photo": False,
+        "crop_photo": False,
+        "filled": False,
+    }
+
+
 class Contour:
     """An ordered loop of pixel points.
 
@@ -67,6 +81,7 @@ class Project:
         self.calibration = Calibration()
         self.margin_mm = 5.0
         self.objects = []   # [TracedObject]
+        self.tiling = default_tiling()   # tiled-printing settings
 
     def set_source_image(self, loaded_image):
         """Record the loaded image's path and pixel dimensions."""
