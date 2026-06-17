@@ -84,15 +84,18 @@ form works without installing.)
    millimetres at true 1:1 scale. Plain SVG opens in any browser; Inkscape
    format adds named layers (photo locked) and mm document units so you can
    fine-tune control points there.
-8. **File → Export Print Tiles…** pick page size, orientation, printer margin
-   and overlap to split the drawing across pages at 1:1. Each tile carries a
-   live-area rectangle, an R#-C# label, and a filled diamond at the middle of
-   each edge; the diamonds on a shared edge line up when you overlap the printed
-   sheets. Files are named `<photo>-rNcM.svg`. Print with auto-scaling / "fit
-   to page" OFF; if the diamonds don't line up at the stated overlap, scaling
-   was applied somewhere. **View → View Tiles** overlays the page-tile grid on
-   the canvas (using the most recent print settings) so you can preview the
-   split before exporting.
+8. **Tiling** is controlled from the **Tiling** group in the side panel: page
+   size, orientation, printer margin, overlap, scale (%), include-photo and
+   fill. Tick **Show tile grid** (or **View → View Tiles**) to overlay the
+   page-tile split on the canvas; it updates live as you change any setting.
+   **File → Export Print Tiles…** then just asks for a folder and writes one
+   SVG per tile using those settings. Each tile carries a live-area rectangle,
+   an R#-C# label, and a filled diamond at the middle of each edge; the
+   diamonds on a shared edge line up when you overlap the printed sheets. Files
+   are named `<photo>-rNcM.svg`. Tiling does **not** require calibration — if
+   the scale isn't set, the image's own pixels are used at its DPI (or 96 DPI
+   if unknown); the **Scale** control resizes the output (50% = half, 200% =
+   double). Print with auto-scaling / "fit to page" OFF.
 9. **Projects:** **File → Save Project** (Ctrl+S) writes a `.tiproj.json` with
    the calibration, margin, units, traced polygons and a reference to the
    source image; **File → Open Project** (Ctrl+O) reloads it (prompting you to

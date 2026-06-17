@@ -10,10 +10,10 @@ import os
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QDockWidget, QDoubleSpinBox, QFileDialog,
-    QHBoxLayout, QInputDialog, QLabel, QListWidget, QListWidgetItem,
-    QMainWindow, QMenu, QMessageBox, QPushButton, QSpinBox, QVBoxLayout,
-    QWidget,
+    QApplication, QCheckBox, QComboBox, QDialog, QDockWidget, QDoubleSpinBox,
+    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
+    QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QSpinBox, QVBoxLayout, QWidget,
 )
 
 from ..core import calibration as calib
@@ -27,7 +27,7 @@ from ..core import tiling
 from ..core import undo
 from ..model import Project
 from .canvas import Canvas
-from .dialogs import CalibrationDialog, ExportSvgDialog, TilingDialog
+from .dialogs import CalibrationDialog, ExportSvgDialog
 from .editable import VertexHandle
 from .objects import ObjectLayer
 
@@ -47,9 +47,6 @@ class MainWindow(QMainWindow):
         self._objects = []             # list[ObjectLayer]
         self._active_index = -1
         self._polygon_counter = 0      # monotonic, for default polygon names
-        # Last-used tiling settings, also driving the View -> Tile Grid overlay.
-        self._tiling_settings = {"page": "Letter", "landscape": False,
-                                 "margin_mm": 6.0, "overlap_mm": 10.0}
 
         # Undo stack for vertex/object edits (seed strokes use the canvas's own
         # stack; Ctrl+Z/Y dispatch between them by mode).
@@ -118,7 +115,8 @@ class MainWindow(QMainWindow):
         self.act_view_tiles = QAction("View &Tiles", self, checkable=True)
         self.act_view_tiles.setToolTip(
             "Overlay the page-tile grid for the current print settings")
-        self.act_view_tiles.triggered.connect(self._update_tile_grid)
+        self.act_view_tiles.triggered.connect(
+            lambda checked: self._set_tiles_overlay(checked))
 
         self.act_calibrate = QAction("&Calibrate Scale…", self)
         self.act_calibrate.triggered.connect(self.start_calibration)
@@ -269,10 +267,66 @@ class MainWindow(QMainWindow):
         self._size_label.setWordWrap(True)
         layout.addWidget(self._size_label)
 
+        layout.addWidget(self._build_tiling_group(panel))
+        layout.addStretch(1)
+
         panel.setLayout(layout)
         dock.setWidget(panel)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self._obj_buttons = (btn_new, btn_del, btn_ren)
+
+    def _build_tiling_group(self, parent):
+        """The interactive tiling controls; changes update the live overlay."""
+        box = QGroupBox("Tiling", parent)
+        form = QFormLayout(box)
+
+        self._show_tiles_check = QCheckBox("Show tile grid", box)
+        self._show_tiles_check.toggled.connect(
+            lambda on: self._set_tiles_overlay(on))
+        form.addRow(self._show_tiles_check)
+
+        self._page_combo = QComboBox(box)
+        for name in tiling.PAGE_SIZES_MM:
+            self._page_combo.addItem(name)
+        form.addRow("Page:", self._page_combo)
+
+        self._orient_combo = QComboBox(box)
+        self._orient_combo.addItems(["Portrait", "Landscape"])
+        form.addRow("Orientation:", self._orient_combo)
+
+        self._tmargin_spin = QDoubleSpinBox(box)
+        self._tmargin_spin.setRange(0.0, 50.0)
+        self._tmargin_spin.setDecimals(1)
+        self._tmargin_spin.setValue(6.0)
+        self._tmargin_spin.setSuffix(" mm")
+        form.addRow("Printer margin:", self._tmargin_spin)
+
+        self._overlap_spin = QDoubleSpinBox(box)
+        self._overlap_spin.setRange(0.0, 100.0)
+        self._overlap_spin.setDecimals(1)
+        self._overlap_spin.setValue(10.0)
+        self._overlap_spin.setSuffix(" mm")
+        form.addRow("Overlap:", self._overlap_spin)
+
+        self._scale_spin = QSpinBox(box)
+        self._scale_spin.setRange(5, 400)
+        self._scale_spin.setSingleStep(5)
+        self._scale_spin.setValue(100)
+        self._scale_spin.setSuffix(" %")
+        form.addRow("Scale:", self._scale_spin)
+
+        self._embed_check = QCheckBox("Include photo", box)
+        form.addRow(self._embed_check)
+        self._filled_check = QCheckBox("Fill objects", box)
+        form.addRow(self._filled_check)
+
+        # Any change refreshes the overlay live.
+        self._page_combo.currentIndexChanged.connect(self._update_tile_grid)
+        self._orient_combo.currentIndexChanged.connect(self._update_tile_grid)
+        self._tmargin_spin.valueChanged.connect(self._update_tile_grid)
+        self._overlap_spin.valueChanged.connect(self._update_tile_grid)
+        self._scale_spin.valueChanged.connect(self._update_tile_grid)
+        return box
 
     def _build_statusbar(self):
         self._scale_label = QLabel("", self)
@@ -862,31 +916,62 @@ class MainWindow(QMainWindow):
         self._refresh_size_label(box)
         self._update_tile_grid()
 
-    def _update_tile_grid(self):
+    def _tiling_params(self):
+        """Read the side-panel tiling controls into a dict."""
+        return {
+            "page": self._page_combo.currentText(),
+            "landscape": self._orient_combo.currentText() == "Landscape",
+            "margin_mm": self._tmargin_spin.value(),
+            "overlap_mm": self._overlap_spin.value(),
+            "scale": self._scale_spin.value() / 100.0,
+            "embed": self._embed_check.isChecked(),
+            "filled": self._filled_check.isChecked(),
+        }
+
+    def _base_mm_per_pixel(self):
+        """mm/px from calibration, or an uncalibrated default from image DPI."""
+        c = self.project.calibration
+        if c.is_calibrated:
+            return c.mm_per_pixel
+        dpi = self.project.dpi or 96.0
+        return 25.4 / dpi
+
+    def _effective_mm_per_pixel(self, scale):
+        """Base mm/px times the print scale factor (1.0 = real size)."""
+        return self._base_mm_per_pixel() * scale
+
+    def _set_tiles_overlay(self, on):
+        """Toggle the tile-grid overlay, keeping menu + panel in sync."""
+        self.act_view_tiles.blockSignals(True)
+        self.act_view_tiles.setChecked(on)
+        self.act_view_tiles.blockSignals(False)
+        if hasattr(self, "_show_tiles_check"):
+            self._show_tiles_check.blockSignals(True)
+            self._show_tiles_check.setChecked(on)
+            self._show_tiles_check.blockSignals(False)
+        self._update_tile_grid()
+
+    def _update_tile_grid(self, *args):
         """Refresh the View -> Tiles overlay (page-tile grid on the canvas)."""
         if not self.canvas.has_photo() or not self.act_view_tiles.isChecked():
             self.canvas.clear_tile_grid()
             return
-        c = self.project.calibration
         pts = self._all_points()
-        if not c.is_calibrated or not pts:
+        if not pts:
             self.canvas.clear_tile_grid()
-            if not c.is_calibrated:
-                self.statusBar().showMessage(
-                    "Calibrate the scale to preview print tiles.", 4000)
             return
-        mpp = c.mm_per_pixel
+        p = self._tiling_params()
+        mpp = self._effective_mm_per_pixel(p["scale"])
         box = geo.bbox_of_points(pts)
         margin_px = self.project.margin_mm / mpp
         ox = box.min_x - margin_px
         oy = box.min_y - margin_px
         content_w_mm = (box.width + 2.0 * margin_px) * mpp
         content_h_mm = (box.height + 2.0 * margin_px) * mpp
-        s = self._tiling_settings
         try:
-            plan = tiling.plan_tiles(content_w_mm, content_h_mm, s["page"],
-                                     s["landscape"], s["margin_mm"],
-                                     s["overlap_mm"])
+            plan = tiling.plan_tiles(content_w_mm, content_h_mm, p["page"],
+                                     p["landscape"], p["margin_mm"],
+                                     p["overlap_mm"])
         except ValueError as exc:
             self.canvas.clear_tile_grid()
             self.statusBar().showMessage("Tile preview: %s" % (exc,), 4000)
@@ -903,9 +988,10 @@ class MainWindow(QMainWindow):
             segments.append((left, y_px, right, y_px))
         self.canvas.set_tile_grid(segments)
         self.statusBar().showMessage(
-            "Tile preview: %d × %d pages (%s%s)."
-            % (plan["ncols"], plan["nrows"], s["page"],
-               ", landscape" if s["landscape"] else ""), 4000)
+            "Tile preview: %d × %d pages (%s%s, %d%%)."
+            % (plan["ncols"], plan["nrows"], p["page"],
+               ", landscape" if p["landscape"] else "",
+               round(p["scale"] * 100)), 4000)
 
     def _on_margin_changed(self, value):
         self.project.margin_mm = float(value)
@@ -986,26 +1072,15 @@ class MainWindow(QMainWindow):
     def export_tiles(self):
         if self._loaded is None:
             return
-        if not self.project.calibration.is_calibrated:
-            QMessageBox.warning(
-                self, "Export Print Tiles",
-                "Calibrate the scale first so tiles can print at 1:1.")
-            return
         self._sync_model()
         if not self.project.objects:
             QMessageBox.information(
                 self, "Export Print Tiles", "Trace at least one object first.")
             return
 
-        dlg = TilingDialog(list(tiling.PAGE_SIZES_MM.keys()), self)
-        if dlg.exec() != QDialog.Accepted:
-            return
-        page, landscape, margin_mm, overlap_mm, embed, filled = dlg.values()
-        # Remember the settings so the View -> Tiles overlay matches.
-        self._tiling_settings = {"page": page, "landscape": landscape,
-                                 "margin_mm": margin_mm,
-                                 "overlap_mm": overlap_mm}
-        self._update_tile_grid()
+        # All settings come from the side-panel Tiling controls.
+        p = self._tiling_params()
+        mpp = self._effective_mm_per_pixel(p["scale"])
 
         out_dir = QFileDialog.getExistingDirectory(
             self, "Choose a folder for the tile SVGs", os.getcwd())
@@ -1019,10 +1094,11 @@ class MainWindow(QMainWindow):
             try:
                 tiles = tiling.build_tiles(
                     self.project,
-                    image_bgr=self._loaded.data if embed else None,
-                    page=page, landscape=landscape,
-                    margin_mm=margin_mm, overlap_mm=overlap_mm,
-                    embed_photo=embed, filled=filled, base_name=base_name)
+                    image_bgr=self._loaded.data if p["embed"] else None,
+                    page=p["page"], landscape=p["landscape"],
+                    margin_mm=p["margin_mm"], overlap_mm=p["overlap_mm"],
+                    embed_photo=p["embed"], filled=p["filled"],
+                    base_name=base_name, mm_per_pixel=mpp)
                 for name, svg in tiles:
                     with open(os.path.join(out_dir, name), "w",
                               encoding="utf-8") as fh:

@@ -176,15 +176,18 @@ def _tile_svg(content, plan, r, c, content_w, content_h):
 
 def build_tiles(project, image_bgr=None, page="Letter", landscape=False,
                 margin_mm=6.0, overlap_mm=10.0, embed_photo=True,
-                downscale_max=None, filled=False, base_name="tile"):
+                downscale_max=None, filled=False, base_name="tile",
+                mm_per_pixel=None):
     """Build one page-sized SVG per tile.
 
     Returns a list of (filename, svg_text); filenames look like
-    "<base_name>-r1c1.svg" (row, then column).
+    "<base_name>-r1c1.svg" (row, then column). `mm_per_pixel` overrides the
+    project's calibration (for an uncalibrated default size or a scale factor).
     """
     content, content_w, content_h = svg_export.build_content(
         project, image_bgr=image_bgr, embed_photo=embed_photo,
-        downscale_max=downscale_max, filled=filled, as_layers=False)
+        downscale_max=downscale_max, filled=filled, as_layers=False,
+        mm_per_pixel=mm_per_pixel)
 
     plan = plan_tiles(content_w, content_h, page, landscape,
                       margin_mm, overlap_mm)

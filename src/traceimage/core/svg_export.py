@@ -122,18 +122,24 @@ def _photo_image_tag(image_bgr, ox, oy, mpp, pixel_w, pixel_h, downscale_max):
 
 
 def build_content(project, image_bgr=None, embed_photo=True,
-                  downscale_max=None, filled=False, as_layers=False):
+                  downscale_max=None, filled=False, as_layers=False,
+                  mm_per_pixel=None):
     """Build the inner photo+trace fragment and return (content, w_mm, h_mm).
 
     Coordinates use master mm space with origin (0, 0) at the top-left of the
     margin box. `as_layers` adds Inkscape layer attributes to the groups.
 
-    Raises ExportError if the project is uncalibrated or has no contours.
+    `mm_per_pixel` overrides the project's calibration (used by tiling to apply
+    a scale factor or an uncalibrated default). If omitted, the project must be
+    calibrated. Raises ExportError otherwise or if there are no contours.
     """
-    calib = project.calibration
-    if not calib.is_calibrated:
-        raise ExportError("calibrate the scale before exporting (mm/px unknown)")
-    mpp = calib.mm_per_pixel
+    mpp = mm_per_pixel
+    if mpp is None:
+        calib = project.calibration
+        if not calib.is_calibrated:
+            raise ExportError(
+                "calibrate the scale before exporting (mm/px unknown)")
+        mpp = calib.mm_per_pixel
 
     bbox = content_bbox_px(project)
     margin_px = project.margin_mm / mpp
